@@ -6,8 +6,6 @@ import logging
 import warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
-import tensorflow as tf
-import torch
 
 from rir_rendering.common.baseline_registry import baseline_registry
 from rir_rendering.config.default import get_config

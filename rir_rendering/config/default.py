@@ -214,6 +214,7 @@ _TC.ENVIRONMENT.UNSEEN_ENV_EVAL_CONTEXT_POSE_IDXS_PATH = None
 _TC.ENVIRONMENT.ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH = None
 _TC.ENVIRONMENT.ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH = None
 _TC.ENVIRONMENT.ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH = None
+_TC.ENVIRONMENT.EVAL_CONTEXT_PERCENTAGES_PATH = "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/valid_context_percentages.npy"
 # -----------------------------------------------------------------------------
 # simulator config
 # -----------------------------------------------------------------------------

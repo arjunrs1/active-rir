@@ -10,6 +10,7 @@ ENVIRONMENT:
   ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/unseenEnv_eval_364datapoints_poseIdxs_splitPerSubGraph.pkl"
   ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/unseenEnv_eval_364datapoints_subGraphIdxs_splitPerSubGraph.pkl"
   ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/unseenEnv_eval_364datapoints_sceneNames.pkl"
+  EVAL_CONTEXT_PERCENTAGES_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/valid_context_percentages.npy"
 
 SIMULATOR:
   SCENE_DATASET: "mp3d" 

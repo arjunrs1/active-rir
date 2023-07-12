@@ -16,11 +16,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 
-from habitat.tasks.utils import (
-    cartesian_to_polar,
-    quaternion_from_coeff,
-    quaternion_rotate_vector,
-)
+from habitat.tasks.utils import cartesian_to_polar
+from habitat.utils.geometry_utils import quaternion_from_coeff, quaternion_rotate_vector
 from habitat_sim.utils.common import quat_from_angle_axis, quat_from_coeffs, quat_to_angle_axis
 
 from rir_rendering.common.eval_metrics import calculate_drr_diff, calculate_rtX_diff
@@ -223,6 +220,11 @@ class UniformContextSamplerDataset(Dataset):
             assert self.ckpt_rootdir_path is not None
             assert os.path.isdir(self.ckpt_rootdir_path)
 
+        self.eval_context_percentages = None
+        if eval_mode:
+            eval_context_percentages = np.load(self.env_cfg.EVAL_CONTEXT_PERCENTAGES_PATH)
+            self.eval_context_percentages = eval_context_percentages[:798] if split == "seen_eval" else eval_context_percentages[798:]
+
     def dump_eval_pkls(self):
         """
         dump pickle files containing eval scene names, input IR pose indexes and query IR pose indexes
@@ -250,10 +252,13 @@ class UniformContextSamplerDataset(Dataset):
     def __getitem__(self, item):
         this_datapoint = self._get_datapoint(item)
 
+        eval_context_pctg = (self.eval_context_percentages[item] if self._eval_mode
+                                    else torch.FloatTensor(1).uniform_(0.05, 1).item())
+        
         context_views_this_datapoint = torch.from_numpy(this_datapoint["context"]["views"])
         context_echoes_mag_this_datapoint = torch.from_numpy(this_datapoint["context"]["echoes_mag"])
         context_poses_this_datapoint = torch.from_numpy(this_datapoint["context"]["poses"])
-        context_mask_this_datapoint = torch.from_numpy(this_datapoint["context"]["mask"])
+        context_mask_this_datapoint = self.variable_length_mask(eval_context_pctg)
 
         gt_queryImpEchoes_mag_this_datapoint = torch.from_numpy(this_datapoint["query"]["gt_impEchoes_mag"])
         if self._eval_mode:
@@ -283,9 +288,9 @@ class UniformContextSamplerDataset(Dataset):
         """
         sweep_audio, fs = sf.read(self.sweep_audio_file_path, dtype='int16')
         if fs != self.rir_sampling_rate:
-            sweep_audio = librosa.resample(sweep_audio.astype("float32"), fs, self.rir_sampling_rate).astype("int16")
+            sweep_audio = librosa.resample(sweep_audio.astype("float32"), orig_sr=fs, target_sr=self.rir_sampling_rate).astype("int16")
 
-        self.sweep_audio = librosa.util.fix_length(sweep_audio, self.rir_sampling_rate)
+        self.sweep_audio = librosa.util.fix_length(sweep_audio, size=self.rir_sampling_rate)
 
     def _get_datapoint(self, item_):
         """
@@ -428,7 +433,7 @@ class UniformContextSamplerDataset(Dataset):
                                                                    self._compute_rotation_from_azimuth(context_poses[context_idx][1]))]["rgb"][:, :, :3]
                 curr_context_entry_depth = self.all_scenes_observations[datapoint_scene][(context_poses[context_idx][0],
                                                                                           self._compute_rotation_from_azimuth(context_poses[context_idx][1]))]["depth"]
-                curr_context_entry_depth = np.expand_dims(curr_context_entry_depth, axis=-1)
+                #curr_context_entry_depth = np.expand_dims(curr_context_entry_depth, axis=-1)
                 if self.sim_cfg.DEPTH_SENSOR.NORMALIZE_DEPTH:
                     curr_context_entry_depth = self._normalize_depth(curr_context_entry_depth)
 
@@ -631,3 +636,14 @@ class UniformContextSamplerDataset(Dataset):
         """
         # rotation is calculated in the habitat coordinate frame counter-clocwise so -Z is 0 and -X is -90
         return -(azimuth + 0) % 360
+    
+    def variable_length_mask(self, float_percentage):
+        """
+        create mask for transformer given percentage of observations to be used
+        :param float_percentage: percentage of context to be used
+        :return: mask with only float_percentage of the max context length set to 1
+        """
+        num_ones = int(float_percentage * self.max_context_length)
+        tensor_data = [1] * num_ones + [0] * (self.max_context_length - num_ones)
+        mask = torch.tensor(tensor_data)
+        return mask
