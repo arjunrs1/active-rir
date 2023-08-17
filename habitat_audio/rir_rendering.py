@@ -31,3 +31,64 @@ class RIRRenderingActionSpaceConfiguration(ActionSpaceConfiguration):
                 habitat_sim.ActuationSpec(amount=self.config.TURN_ANGLE),
             ),
         }
+    
+@registry.register_action_space_configuration(name="move-grid-3x3")
+class MoveGrid3x3SpaceConfiguration(ActionSpaceConfiguration):
+    def get(self):
+        return {
+            HabitatSimActions.PAUSE: habitat_sim.ActionSpec("pause"),
+            HabitatSimActions.TOP_L: habitat_sim.ActionSpec(
+                "top_l",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.TOP_M: habitat_sim.ActionSpec(
+                "top_m",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.TOP_R: habitat_sim.ActionSpec(
+                "top_r",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.MID_L: habitat_sim.ActionSpec(
+                "mid_l",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.MID_M: habitat_sim.ActionSpec(
+                "mid_m",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.MID_R: habitat_sim.ActionSpec(
+                "mid_r",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.BOT_L: habitat_sim.ActionSpec(
+                "bot_l",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.BOT_M: habitat_sim.ActionSpec(
+                "bot_m",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.BOT_R: habitat_sim.ActionSpec(
+                "bot_r",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            )
+        } 

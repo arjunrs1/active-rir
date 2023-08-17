@@ -16,6 +16,11 @@ from habitat.core.simulator import (
     Simulator,
 )
 
+from habitat.utils.geometry_utils import (
+    quaternion_from_coeff,
+    quaternion_rotate_vector,
+)
+
 from habitat.core.utils import not_none_validator, try_cv2_import
 from habitat.utils.visualizations import fog_of_war, maps
 
@@ -42,6 +47,7 @@ def merge_sim_episode_config(
         agent_cfg.defrost()
         agent_cfg.START_POSITION = episode.start_position
         agent_cfg.START_ROTATION = episode.start_rotation
+        agent_cfg.QUERY_POSITION_IDXS = episode.query_locations
         agent_cfg.IS_SET_START_STATE = True
         agent_cfg.freeze()
     return sim_config
@@ -56,6 +62,21 @@ class ExplorationTask(NavigationTask):
 
     def _check_episode_is_active(self, *args: Any, **kwargs: Any) -> bool:
         return self._sim._is_episode_active
+    
+    def reset(self, episode: Episode):
+        observations  = self._sim.reset()
+        observations.update(
+            self.sensor_suite.get_observations(
+                observations=observations, episode=episode, task=self
+            )
+        )
+
+        for action_instance in self.actions.values():
+            action_instance.reset(episode=episode, task=self)
+
+        self._is_episode_active = True
+
+        return observations
 
 
 @registry.register_task_action
@@ -74,7 +95,7 @@ class BinSpectMagSensor(Sensor):
     r"""Binaural spectrogram magnitude at the current pose
     """
 
-    def __init__(self, *args: Any, sim: Simulator, config: Config, **kwargs: Any):
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
         self._sim = sim
         super().__init__(config=config)
 
@@ -95,12 +116,12 @@ class BinSpectMagSensor(Sensor):
             dtype=np.float32,
         )
 
-    def get_observation(self, *args: Any, observations, episode: Episode, **kwargs: Any):
+    def get_observation(self, observations, episode: Episode, *args: Any, **kwargs: Any):
         return self._sim.get_current_bin_spec_mag()
 
 
-@registry.register_sensor(name="PoseSensor")
-class PoseSensor(Sensor):
+@registry.register_sensor(name="ActivePoseSensor")
+class ActivePoseSensor(Sensor):
     r"""The agents current location and heading in the coordinate frame defined by the
     episode, i.e. the axis it faces along and the origin is defined by its state at
     t=0. 
@@ -168,6 +189,6 @@ class PoseSensor(Sensor):
         )
 
         return np.array(
-            [-agent_position_xyz[2], agent_position_xyz[0], agent_heading,],
+            [-agent_position_xyz[2], agent_position_xyz[0], agent_heading[0],],
             dtype=np.float32
         )

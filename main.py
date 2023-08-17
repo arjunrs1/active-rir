@@ -8,7 +8,7 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 
 from rir_rendering.common.baseline_registry import baseline_registry
-from rir_rendering.config.default import get_config
+from rir_rendering.config.default_active import get_config
 from habitat_audio import *
 
 
@@ -56,6 +56,12 @@ def main():
         type=int,
         default=-1,
         help="Evaluation interval of checkpoints",
+    )
+    parser.add_argument(
+        "--active",
+        action="store_true",
+        default=False,
+        help="whether to run activeRIR or FS-RIR",
     )
     args = parser.parse_args()
 

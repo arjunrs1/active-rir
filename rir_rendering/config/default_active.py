@@ -14,10 +14,10 @@ CONFIG_FILE_SEPARATOR = ","
 # -----------------------------------------------------------------------------
 _C = CN()
 _C.SEED = 0
-_C.BASE_TASK_CONFIG_PATH = "configs/tasks/pointnav.yaml"
+_C.BASE_TASK_CONFIG_PATH = "configs/tasks/active_context_sampler/train_active_context_sampler.yaml"
 _C.TASK_CONFIG = CN()  # task_config will be stored as a config node
 _C.CMD_TRAILING_OPTS = []  # store command line options as list of strings
-_C.TRAINER_NAME = "ppo"
+_C.TRAINER_NAME = "ActiveRIRTrainer"
 _C.ENV_NAME = "ExploreEnv"
 _C.SIMULATOR_GPU_ID = 0
 _C.TORCH_GPU_ID = 0
@@ -25,12 +25,13 @@ _C.PARALLEL_GPU_IDS = []
 _C.MODEL_DIR = ''
 _C.TENSORBOARD_DIR = "tb"
 _C.VIDEO_OPTION = []
-_C.VIDEO_DIR = '' 
+_C.VIDEO_DIR = ''
+_C.TEST_EPISODE_COUNT = 2 
 _C.AUDIO_DIR = '' 
 _C.VISUALIZATION_OPTION = [] 
 _C.EVAL_CKPT_PATH_DIR = "data/checkpoints"  
 _C.NUM_PROCESSES = 1
-_C.SENSORS = ["RGB_SENSOR", "DEPTH_SENSOR"]
+_C.SENSORS = ["BIN_SPECT_MAG_SENSOR", "POSE_SENSOR", "RGB_SENSOR", "DEPTH_SENSOR"]
 _C.CHECKPOINT_FOLDER = "data/checkpoints"
 _C.NUM_UPDATES = 10000
 _C.LOG_INTERVAL = 10
@@ -46,6 +47,9 @@ _C.EPS_SCENES_N_IDS = []
 _C.JOB_ID = 1
 _C.TRAIN_OR_EVAL_FOR_SPECIFIC_SCENE = False
 _C.SPECIFIC_SCENE_NAME = None
+_C.CONTINUOUS = False
+_C.FOLLOW_SHORTEST_PATH = False
+_C.USE_LAST_CKPT = False
 
 # -----------------------------------------------------------------------------
 # EVAL CONFIG
@@ -62,8 +66,11 @@ _C.EVAL.DATA_PARALLEL_TRAINING = False
 _C.RL = CN()
 _C.RL.SUCCESS_REWARD = 10.0
 _C.RL.SLACK_REWARD = -0.01
+_C.RL.MEASUREMENT_RIR_REWARD = 1.0
 _C.RL.WITH_DISTANCE_REWARD = True
 _C.RL.DISTANCE_REWARD_SCALE = 1.0
+_C.RL.TIME_DIFF = False
+_C.RL.PRETRAINED_RIR_PREDICTOR_PATH = "/vision/asomaya1/active-rir/runs_eval/fs_rir/data/seen_eval_best_ckpt.pth"
 # -----------------------------------------------------------------------------
 # PROXIMAL POLICY OPTIMIZATION (PPO)
 # -----------------------------------------------------------------------------
@@ -154,6 +161,7 @@ _C.UniformContextSampler.PositionalEnc = CN()
 _C.UniformContextSampler.PositionalEnc.type = "sinusoidal"
 _C.UniformContextSampler.PositionalEnc.num_freqs_for_sinusoidal = 8
 _C.UniformContextSampler.PositionalEnc.shared_pose_encoder_for_context_n_query = False
+#_C.UniformContextSampler.PositionalEnc.n_positional_obs = 5
 
 _C.UniformContextSampler.FusionEnc = CN()
 _C.UniformContextSampler.FusionEnc.type = "concatenate"
@@ -192,7 +200,7 @@ _TC.TASK.BIN_SPECT_MAG_SENSOR.FEATURE_SHAPE = [256, 257, 2] # mp3d (n_fft=511, h
 # POSE SENSOR
 # -----------------------------------------------------------------------------
 _TC.TASK.POSE_SENSOR = CN()
-_TC.TASK.POSE_SENSOR.TYPE = "PoseSensor"
+_TC.TASK.POSE_SENSOR.TYPE = "ActivePoseSensor"
 _TC.TASK.POSE_SENSOR.FEATURE_SHAPE = [5]
 # -----------------------------------------------------------------------------
 # environment config
@@ -221,9 +229,10 @@ _TC.ENVIRONMENT.EVAL_CONTEXT_PERCENTAGES_PATH = "data/eval_arbitraryRIRQuery_dat
 _TC.SIMULATOR.SEED = -1
 _TC.SIMULATOR.SCENE_DATASET = "mp3d"
 _TC.SIMULATOR.MAX_EPISODE_STEPS = 100 #
-_TC.SIMULATOR.GRID_SIZE = 1.0
+#_TC.SIMULATOR.GRID_SIZE = 1.0
 _TC.SIMULATOR.USE_RENDERED_OBSERVATIONS = True
 _TC.SIMULATOR.RENDERED_OBSERVATIONS = "data/scene_observations/"
+_TC.SIMULATOR.DEFAULT_AGENT_ID = 0
 # -----------------------------------------------------------------------------
 # audio config
 # -----------------------------------------------------------------------------
@@ -244,11 +253,23 @@ _TC.SIMULATOR.AUDIO.VALID_ECHO_POSES_PATH = ""
 _TC.SIMULATOR.AUDIO.VALID_ARBITRARY_RIR_TRAIN_POSES_PATH = ""
 _TC.SIMULATOR.AUDIO.VALID_ARBITRARY_RIR_SEEN_ENV_EVAL_POSES_PATH = ""
 _TC.SIMULATOR.AUDIO.VALID_ARBITRARY_RIR_UNSEEN_ENV_EVAL_POSES_PATH = ""
+_TC.SIMULATOR.AUDIO.HAS_DISTRACTOR_SOUND = False
+# -----------------------------------------------------------------------------
+# soundspaces config
+# -----------------------------------------------------------------------------
+_TC.SIMULATOR.GRID_SIZE = 0.5
+_TC.SIMULATOR.CONTINUOUS_VIEW_CHANGE = False
+_TC.SIMULATOR.VIEW_CHANGE_FPS = 10
+_TC.SIMULATOR.SCENE_OBSERVATION_DIR = 'data/scene_observations'
+_TC.SIMULATOR.STEP_TIME = 1.0
+_TC.SIMULATOR.AUDIO.SOURCE_SOUND_DIR = "data/sounds/1s_all"
+_TC.SIMULATOR.AUDIO.EVERLASTING = True
+_TC.SIMULATOR.AUDIO.CROSSFADE = False
 # -----------------------------------------------------------------------------
 # Dataset extension
 # -----------------------------------------------------------------------------
 _TC.DATASET.VERSION = 'v1'
-
+_TC.DATASET.CONTINUOUS = False
 
 def merge_from_path(config, config_paths):
 	"""

@@ -3,6 +3,8 @@
 from rir_rendering.uniform_context_sampler.uniform_context_sampler_trainer import UniformContextSamplerTrainer
 from rir_rendering.common.base_trainer import BaseRLTrainer, BaseTrainer
 
+from rir_rendering.active_context_sampler.ppo_trainer import ActiveRIRTrainer
+
 # __all__ = ["BaseTrainer", "BaseRLTrainer", "PPOTrainer", "RolloutStoragePol", "RolloutStorageSep", "PassiveTrainer"]
 # __all__ = ["BaseTrainer", "BaseRLTrainer", "PPOTrainer", "RolloutStorageExplore", "UniformContextSamplerTrainer"]
-__all__ = ["BaseTrainer", "BaseRLTrainer", "UniformContextSamplerTrainer"]
+__all__ = ["BaseTrainer", "BaseRLTrainer", "UniformContextSamplerTrainer", "ActiveRIRTrainer"]

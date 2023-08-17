@@ -1,9 +1,18 @@
-BASE_TASK_CONFIG_PATH: "configs/tasks/uniform_context_sampler/train_uniform_context_sampler.yaml"
-SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"] 
+BASE_TASK_CONFIG_PATH: "configs/tasks/active_context_sampler/train_active_context_sampler.yaml"
+TRAINER_NAME: "ActiveRIRTrainer"
+ENV_NAME: "TeleportEnv"
+SIMULATOR_GPU_ID: 0
+TORCH_GPU_ID: 0
+VIDEO_OPTION: []
+TENSORBOARD_DIR: "tb"
+VIDEO_DIR: "video_dir"
+TEST_EPISODE_COUNT: -1
+EVAL_CKPT_PATH_DIR: "data/new_checkpoints"
+NUM_ENVIRONMENTS: 6
+SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"]
+CHECKPOINT_FOLDER: "data/new_checkpoints"
 
-TRAINER_NAME: "uniform_context_sampler"
-
-NUM_PROCESSES: 1
+NUM_PROCESSES: 10
 
 UniformContextSampler:
   num_epochs: 60000
@@ -57,10 +66,32 @@ UniformContextSampler:
     type: "sinusoidal"
     num_freqs_for_sinusoidal: 8 
     shared_pose_encoder_for_context_n_query: True
-    n_positional_obs: 5
+    #n_positional_obs: 3 #is this right? -> Check with Sagnik
 
   FusionEnc:
     type: "concatenate"
 
   FusionDec:
     type: "concatenate"
+
+RL:
+  PPO:
+    # ppo params
+    clip_param: 0.1
+    ppo_epoch: 4
+    num_mini_batch: 1
+    value_loss_coef: 0.5
+    entropy_coef: 0.20
+    lr: 2.5e-4
+    eps: 1e-5
+    max_grad_norm: 0.5
+    # decide the length of history that ppo encodes
+    num_steps: 150
+    hidden_size: 512
+    use_gae: True
+    gamma: 0.99
+    tau: 0.95
+    use_linear_clip_decay: True
+    use_linear_lr_decay: True
+    # window size for calculating the past rewards
+    reward_window_size: 50

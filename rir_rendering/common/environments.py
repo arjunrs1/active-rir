@@ -7,6 +7,7 @@ in habitat. Customized environments should be registered using
 
 from typing import Optional, Type
 import logging
+import math
 
 import habitat
 from habitat import Config, Dataset
@@ -59,6 +60,7 @@ class ExploreEnv(habitat.RLEnv):
         :return: tuple with observation, reward, done/not-done mask and other episode information after current step
         """
         observation, reward, done, info = super().step(*args, **kwargs)
+        print(observation.keys())
         self._env_step += 1
         return observation, reward, done, info
 
@@ -100,6 +102,142 @@ class ExploreEnv(habitat.RLEnv):
         :return: True if goal reached else False
         """
         return False
+
+    def get_done(self, observations):
+        """
+        is episode done or not
+        :param observations: observations at current step
+        :return: True if episode done else False
+        """
+        done = False
+        if self._env.episode_over:
+            done = True
+        return done
+
+    def get_info(self, observations):
+        """
+        get episode information
+        :param observations: observations at current step
+        :return: episode information
+        """
+        return self.habitat_env.get_metrics()
+
+    def get_current_episode_id(self):
+        """
+        get current episode ID
+        :return: current episode ID
+        """
+        return self.habitat_env.current_episode.episode_id
+
+
+@baseline_registry.register_env(name="TeleportEnvTry")
+class TeleportEnvTry(habitat.RLEnv):
+    def __init__(self, config: Config, dataset: Optional[Dataset] = None):        
+        """
+        Environment class
+        :param config: environment config
+        :param dataset: dataset for environment
+        """
+        self._rl_config = config.RL
+        self._config = config
+        self._core_env_config = config.TASK_CONFIG
+        
+        self._episode_distance_covered = None
+        super().__init__(self._core_env_config, dataset)
+
+    def reset(self):
+        """
+        reset environment
+        :return: observation after reset
+        """
+        self._env_step = 0
+        observations = super.reset()
+        queries, gt_rirs = self._env._sim.get_RIR_reward_queries_RIRS()
+        logging.debug(super().current_episode)
+        return observations
+
+    def step(self, *args, **kwargs):
+        observation, reward, done, info = super().step(*args, **kwargs)
+        self._env_step += 1
+        return observation, reward, done, info
+
+    def get_reward_range(self):
+        return (
+            self._rl_config.SLACK_REWARD - 1.0,
+            self._rl_config.SUCCESS_REWARD + 1.0,
+        )
+
+    def get_reward(self, observations):
+
+        return 0
+
+    def get_done(self, observations):
+        done = False
+        if self._env.episode_over:
+            done = True
+        return done
+
+    def get_info(self, observations):
+        return self.habitat_env().get_metrics()
+
+    # for data collection
+    def get_current_episode_id(self):
+        return self.habitat_env.current_episode.episode_id
+
+@baseline_registry.register_env(name="TeleportEnv")
+class TeleportEnv(habitat.RLEnv):
+    def __init__(self, config: Config, dataset: Optional[Dataset] = None):
+        """
+        Environment class
+        :param config: environment config
+        :param dataset: dataset for environment
+        """
+        self._rl_config = config.RL
+        self._config = config
+        self._core_env_config = config.TASK_CONFIG
+
+        self._episode_distance_covered = None
+        super().__init__(self._core_env_config, dataset)
+
+    def reset(self):
+        """
+        reset environment
+        :return: observation after reset
+        """
+        self._env_step = 0
+        observation = super().reset()
+        queries, gt_rirs = self._env._sim.get_RIR_reward_queries_RIRS()
+        logging.debug(super().current_episode)
+        return observation, queries, gt_rirs
+
+    def step(self, *args, **kwargs):
+        """
+        take step in environment
+        :param args: arguments
+        :param kwargs: keyword arguments
+        :return: tuple with observation, reward, done/not-done mask and other episode information after current step
+        """
+        observation, reward, done, info = super().step(*args, **kwargs)
+        self._env_step += 1
+        return observation, reward, done, info
+
+    def get_reward_range(self):
+        """
+        get range of reward
+        :return: reward range
+        """
+        return (
+            self._rl_config.SLACK_REWARD - 1.0,
+            self._rl_config.SUCCESS_REWARD + 1.0,
+        )   
+
+    def get_reward(self, observations):
+        """
+        get reward for current step
+        :param observations: observations at current step
+        :return: reward for current step
+        """
+        return 0
 
     def get_done(self, observations):
         """
