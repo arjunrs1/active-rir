@@ -17,6 +17,7 @@ from habitat.sims.habitat_simulator.habitat_simulator import HabitatSim
 from habitat.sims.habitat_simulator.actions import HabitatSimActions
 from habitat.core.simulator import (Config, AgentState, ShortestPathPoint)
 from habitat_audio.utils import load_points_data, _to_tensor
+from soundspaces.utils import load_metadata
 
 
 class DummySimulator:
@@ -540,7 +541,8 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
                 self._frame_cache = dict()
             logging.debug('Loaded scene {}'.format(self.current_scene_name))
 
-            self.points, self.graph = load_metadata(self.metadata_dir)
+            self.points, self.graph = load_points_data(self.meta_dir, self.config_yaml.AUDIO.GRAPH_FILE,
+                                                       scene_dataset=self.temp_scene_dataset)
             for node in self.graph.nodes():
                 self._position_to_index_mapping[self.position_encoding(self.graph.nodes()[node]['point'])] = node
             self._instance2label_mapping = None

@@ -511,7 +511,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             config.freeze()
 
         logger.info(f"env config: {config}")
-        construct_envs(
+        self.envs = construct_envs(
             config, get_env_class(config.ENV_NAME)
         )
         if self.config.DISPLAY_RESOLUTION != model_resolution:
@@ -537,7 +537,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
             )
             self.metric_uuids.append(measure_type(sim=None, task=None, config=None)._get_uuid())
 
-        observations, query_pos_idxs, gt_rirs = self.envs.reset()
+        observations_and_queries = self.envs.reset()
+        observations, query_pos_idxs, gt_rirs = zip(*observations_and_queries)
+        observations = list(observations)
+        query_pos_idxs = list(query_pos_idxs)
+        gt_rirs = list(gt_rirs)
+
         self.query_positions = query_pos_idxs
         self.gt_rirs = gt_rirs
         if self.config.DISPLAY_RESOLUTION != model_resolution:
@@ -545,6 +550,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         full_obs = []
         batch = batch_obs(observations, self.device)
+        if len(batch['depth'].shape) == 5:
+            batch['depth'] = torch.squeeze(batch['depth'],-1)
         full_obs.append(batch)
 
         current_episode_reward = torch.zeros(
@@ -606,8 +613,16 @@ class ActiveRIRTrainer(BaseRLTrainer):
             observations, rewards, dones, infos = [
                 list(x) for x in zip(*outputs)
             ]
+            if all(isinstance(obs, tuple) for obs in observations) and isinstance(observations, list):
+                observations, query_positions, gt_rirs = zip(*observations)
+                observations = list(observations)
+                query_positions = list(query_positions)
+                gt_rirs = list(gt_rirs)
+                self.query_positions = query_positions
+                self.gt_rirs = gt_rirs
+            observations = [{**obs, 'depth': obs['depth'].squeeze(-1)} for obs in observations]
 
-            rewards = self.get_reward(observations, prev_observations)
+            rewards = [self.get_reward_placeholder(observations, None)]
 
             for i in range(self.envs.num_envs):
                 if len(self.config.VIDEO_OPTION) > 0:
@@ -734,7 +749,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         stats_file = os.path.join(config.TENSORBOARD_DIR, '{}_stats_{}.json'.format(config.EVAL.SPLIT, config.SEED))
         new_stats_episodes = {','.join(key): value for key, value in stats_episodes.items()}
         with open(stats_file, 'w') as fo:
-            json.dump(new_stats_episodes, fo)
+            json.dump(new_stats_episodes, fo, indent=4)
 
         episode_reward_mean = aggregated_stats["reward"] / num_episodes
         episode_metrics_mean = {}
