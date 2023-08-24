@@ -267,6 +267,11 @@ _TC.SIMULATOR.AUDIO.SOURCE_SOUND_DIR = "data/sounds/1s_all"
 _TC.SIMULATOR.AUDIO.EVERLASTING = True
 _TC.SIMULATOR.AUDIO.CROSSFADE = False
 # -----------------------------------------------------------------------------
+# DistanceToGoal Measure
+# -----------------------------------------------------------------------------
+_TC.TASK.ACOUSTIC_MAP_ERROR = CN()
+_TC.TASK.ACOUSTIC_MAP_ERROR.TYPE = "AcousticMapError"
+# -----------------------------------------------------------------------------
 # Dataset extension
 # -----------------------------------------------------------------------------
 _TC.DATASET.VERSION = 'v1'
@@ -351,7 +356,7 @@ def get_config(
 	#-------------------------- modifying cfgs for visualization -------------------
 	if len(config.VIDEO_OPTION) > 0:
 		config.VISUALIZATION_OPTION = ["top_down_map"]
-		config.TASK_CONFIG.SIMULATOR.USE_RENDERED_OBSERVATIONS = False
+		#config.TASK_CONFIG.SIMULATOR.USE_RENDERED_OBSERVATIONS = False
 
 	config.TASK_CONFIG.freeze()
 

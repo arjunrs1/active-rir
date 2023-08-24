@@ -203,6 +203,10 @@ class ActiveRIRTrainer(BaseRLTrainer):
             self.gt_rirs = gt_rirs
         observations = [{**obs, 'depth': obs['depth'].squeeze(-1)} for obs in observations]
 
+        #properly format observations/context and query_positions
+        #pass observations to model, along with query_positions
+        #get predicted RIRs at those positions
+        #compute RIR error.
 
         #TO DO: fix rewards!!
         rewards = [self.get_reward_placeholder(observations, rollouts.observations.items())]
@@ -637,7 +641,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
                                                            self.config.DISPLAY_RESOLUTION, 3))
                     frame = observations_to_image(observations[i], infos[i])
                     rgb_frames[i].append(frame)
-                    audios[i].append(observations[i]['audiogoal'])
 
             if config.DISPLAY_RESOLUTION != model_resolution:
                 resize_observation(observations, model_resolution)
@@ -699,17 +702,15 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             sr=self.config.TASK_CONFIG.SIMULATOR.AUDIO.RIR_SAMPLING_RATE,
                             episode_id=current_episodes[i].episode_id,
                             checkpoint_idx=checkpoint_index,
-                            metric_name='spl',
-                            metric_value=infos[i]['spl'],
+                            metric_name='no_metric',
+                            metric_value=5.0,
                             tb_writer=writer,
-                            audios=audios[i][:-1],
                             fps=fps
                         )
 
                         # observations has been reset but info has not
                         # to be consistent, do not use the last frame
                         rgb_frames[i] = []
-                        audios[i] = []
 
                     if "top_down_map" in self.config.VISUALIZATION_OPTION:
                         top_down_map = plot_top_down_map(infos[i],

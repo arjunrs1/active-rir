@@ -72,7 +72,7 @@ TASK:
   POSE_SENSOR:
     FEATURE_SHAPE: [3]
     TYPE: "ActivePoseSensor"    
-  MEASUREMENTS: []
+  MEASUREMENTS: [] #"ACOUSTIC_MAP_ERROR"
   GOAL_SENSOR_UUID: spect_mag
   ACTIONS:
     PAUSE:

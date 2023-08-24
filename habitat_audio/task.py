@@ -27,6 +27,7 @@ from habitat.utils.visualizations import fog_of_war, maps
 from habitat.sims.habitat_simulator.actions import HabitatSimActions
 from habitat.tasks.utils import cartesian_to_polar
 from habitat.utils.geometry_utils import quaternion_rotate_vector
+from habitat_audio.dataset import ExplorationEpisode
 
 cv2 = try_cv2_import()
 
@@ -192,3 +193,71 @@ class ActivePoseSensor(Sensor):
             [-agent_position_xyz[2], agent_position_xyz[0], agent_heading[0],],
             dtype=np.float32
         )
+    
+""" @registry.register_measure
+class AcousticMapError(Measure):
+    rDistance to goal the episode ends
+   
+
+    def __init__(
+        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
+    ):
+        self._start_end_episode_distance = None
+        self._sim = sim
+        self._config = config
+
+        super().__init__()
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "acoustic_map_error"
+
+    def reset_metric(self, *args: Any, episode, **kwargs: Any):
+        #self._start_end_episode_distance = episode.info["geodesic_distance"]
+        self._metric = None
+
+    def update_metric(
+        self, *args: Any, episode, action, task: EmbodiedTask, **kwargs: Any
+    ):
+        #distance_to_goal = task.measurements.measures[DistanceToGoal.cls_uuid].get_metric()
+        #self._metric = distance_to_goal / self._start_end_episode_distance
+        self._metric = 1 """
+
+@registry.register_measure
+class AcousticMapError(Measure):
+    """The measure calculates a distance towards the goal."""
+
+    cls_uuid: str = "acoustic_map_error"
+
+    def __init__(
+        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
+    ):
+
+        self._sim = sim
+        self._config = config
+        self._query_positions = None
+        self._gt_rirs = None
+        self.context_observations = []
+
+        super().__init__(**kwargs)
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return self.cls_uuid
+
+    def reset_metric(self, episode, *args: Any, **kwargs: Any):
+        self._metric = None
+        self._query_positions = episode.query_locations
+        self._gt_rirs = self._sim.generate_gt_RIRs(self._query_positions)
+        self.update_metric(episode=episode, *args, **kwargs)
+
+    def update_metric(
+        self, episode: ExplorationEpisode, *args: Any, **kwargs: Any
+    ):
+        #properly format observations/context and query_positions
+        #pass observations to model, along with query_positions
+        #get predicted RIRs at those positions
+        #compute RIR error.
+
+        self._metric = 0
+
+
+#define similar acoustic_map_error_reward class (similar to above), that computes delta reward.

@@ -13,9 +13,9 @@ from scipy.signal import fftconvolve
 from habitat.core.registry import registry
 import habitat_sim
 from habitat_sim.utils.common import quat_from_angle_axis, quat_from_coeffs, quat_to_angle_axis
-from habitat.sims.habitat_simulator.habitat_simulator import HabitatSim
+from habitat.sims.habitat_simulator.habitat_simulator import HabitatSim, HabitatSimSensor, overwrite_config
 from habitat.sims.habitat_simulator.actions import HabitatSimActions
-from habitat.core.simulator import (Config, AgentState, ShortestPathPoint)
+from habitat.core.simulator import (Config, AgentState, ShortestPathPoint, SensorSuite)
 from habitat_audio.utils import load_points_data, _to_tensor
 from soundspaces.utils import load_metadata
 
@@ -83,13 +83,30 @@ class HabitatSimAudioEnabledTrain(HabitatSim):
         logging.info('Current scene: {}'.format(self.current_scene_name,))
 
         if self.config_yaml.USE_RENDERED_OBSERVATIONS:
-            logging.info('Loaded the rendered observations for all scenes')
-            with open(self.current_scene_observation_file, 'rb') as fo:
-                self._frame_cache = pickle.load(fo)
             if hasattr(self, '_sim'):
                 self._sim.close()
                 del self._sim
             self._sim = DummySimulator()
+            logging.info('Loaded the rendered observations for all scenes')
+            with open(self.current_scene_observation_file, 'rb') as fo:
+                self._frame_cache = pickle.load(fo)
+        else:
+            self._sim = habitat_sim.Simulator(config=self.sim_config)
+            self.add_acoustic_config()
+            self.material_configured = False
+
+    def add_acoustic_config(self):
+        audio_sensor_spec = habitat_sim.AudioSensorSpec()
+        audio_sensor_spec.uuid = "audio_sensor"
+        audio_sensor_spec.enableMaterials = False
+        audio_sensor_spec.channelLayout.type = habitat_sim.sensor.RLRAudioPropagationChannelLayoutType.Binaural
+        audio_sensor_spec.channelLayout.channelCount = 2
+        audio_sensor_spec.acousticsConfig.sampleRate = self.config_yaml.AUDIO.RIR_SAMPLING_RATE
+        audio_sensor_spec.acousticsConfig.threadCount = 1
+        audio_sensor_spec.acousticsConfig.indirectRayCount = 500
+        audio_sensor_spec.acousticsConfig.temporalCoherence = True
+        audio_sensor_spec.acousticsConfig.transmission = True
+        self._sim.add_sensor(audio_sensor_spec)           
 
     def get_agent_state(self, agent_id: int = 0) -> habitat_sim.AgentState:
         r"""
@@ -122,8 +139,8 @@ class HabitatSimAudioEnabledTrain(HabitatSim):
         if not self.config_yaml.USE_RENDERED_OBSERVATIONS:
             super().set_agent_state(position, rotation, agent_id=agent_id, reset_sensors=reset_sensors)
         else:
-            pass
-
+            self._sim.set_agent_state(position, rotation)
+    
     @property
     def current_scene_observation_file(self):
         r"""
@@ -172,6 +189,8 @@ class HabitatSimAudioEnabledTrain(HabitatSim):
                 del self._sim
                 self.sim_config = self.create_sim_config(self._sensor_suite)
                 self._sim = habitat_sim.Simulator(self.sim_config)
+                self.add_acoustic_config()
+                self.material_configured = False
                 self._update_agents_state()
             else:
                 with open(self.current_scene_observation_file, 'rb') as fo:
@@ -549,7 +568,7 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
 
         if not self.config.USE_RENDERED_OBSERVATIONS:
             audio_sensor = self._sim.get_agent(0)._sensors["audio_sensor"]
-            audio_sensor.setAudioSourceTransform(np.array(self.config.AGENT_0.GOAL_POSITION) + np.array([0, 1.5, 0]))
+            audio_sensor.setAudioSourceTransform(np.array(self.config.AGENT_0.START_POSITION) + np.array([0, 1.5, 0]))
             if not self.material_configured:
                 audio_sensor.setAudioMaterialsJSON("data/mp3d_material_config.json")
                 self.material_configured = True
