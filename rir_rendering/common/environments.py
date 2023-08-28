@@ -60,7 +60,6 @@ class ExploreEnv(habitat.RLEnv):
         :return: tuple with observation, reward, done/not-done mask and other episode information after current step
         """
         observation, reward, done, info = super().step(*args, **kwargs)
-        print(observation.keys())
         self._env_step += 1
         return observation, reward, done, info
 

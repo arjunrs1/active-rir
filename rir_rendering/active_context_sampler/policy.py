@@ -165,7 +165,7 @@ class ContextEncoderNet(Net):
             log_eps=self._sampler_cfg.log_gt_eps,
         )
 
-        self.pose_context_enc = LowDimPositionalEnc(
+        self.pose_context_enc = PositionalEnc(
             positional_enc_cfg=self._sampler_cfg.PositionalEnc,
         )
 
@@ -197,7 +197,7 @@ class ContextEncoderNet(Net):
         assert 'rgb' in observations
         rgb = observations['rgb']
         assert 'depth' in observations
-        depth = observations['depth']
+        depth = self.normalize_depth(observations['depth'])
         assert 'pose' in observations
         pose = observations['pose']
 
@@ -217,8 +217,6 @@ class ContextEncoderNet(Net):
         pose_context_feats = self.pose_context_enc({"positional_obs": pose})
         context_feats.append(pose_context_feats)
 
-        #how to deal with masks???
-
         #concatenate encoded modalities
         x1 = self.fusion_context_enc(torch.cat(context_feats, dim=1).unsqueeze(0))
 
@@ -237,3 +235,15 @@ class ContextEncoderNet(Net):
             assert True
 
         return x2, rnn_hidden_states1, prev_obs_hidden_states1
+    
+    def normalize_depth(self, depth):
+        """
+        normalize depth
+        :param depth: unnormalized depth
+        :return: normalized depth
+        """
+        depth = (depth - self._cfg.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MIN_DEPTH) / (
+            self._cfg.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH - self._cfg.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.MIN_DEPTH
+        )
+
+        return depth

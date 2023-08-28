@@ -5,6 +5,7 @@ import pickle
 import os
 
 import librosa
+import torch
 import numpy as np
 import networkx as nx
 from scipy.io import wavfile
@@ -18,6 +19,8 @@ from habitat.sims.habitat_simulator.actions import HabitatSimActions
 from habitat.core.simulator import (Config, AgentState, ShortestPathPoint, SensorSuite)
 from habitat_audio.utils import load_points_data, _to_tensor
 from soundspaces.utils import load_metadata
+from habitat.utils.geometry_utils import quaternion_rotate_vector
+from habitat.tasks.utils import cartesian_to_polar
 
 
 class DummySimulator:
@@ -401,9 +404,48 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         super().__init__(config)
         
         self._get_queries_and_RIRs = True
-        self.query_position_idxs = None
+        self.query_poses = None
         self.gt_rirs = None
-        self.queries_gt_rirs = None
+
+    def compute_relative_pose(self, current_pose=None, ref_pose=None):
+        """
+        compute relative pose
+        :param current_pose: current pose
+        :param ref_pose: reference pose
+        :param scene_graph: scene graph
+        :return: relative pose
+        """
+        assert isinstance(current_pose, list)
+        assert isinstance(ref_pose, list)
+        assert len(ref_pose) == 2
+        assert len(current_pose) == 3
+
+        ref_position_xyz = np.array(list(self.graph.nodes[ref_pose[0]]["point"]), dtype=np.float32)
+        rotation_world_ref = quat_from_angle_axis(np.deg2rad(self._compute_rotation_from_azimuth(ref_pose[1])),
+                                                  np.array([0, 1, 0]))
+
+        agent_position_xyz = np.array(list(self.graph.nodes[current_pose[0]]["point"]), dtype=np.float32)
+        agent_position_xyz = quaternion_rotate_vector(
+            rotation_world_ref.inverse(), agent_position_xyz - ref_position_xyz
+        )
+
+        audio_source_position_xyz = np.array(list(self.graph.nodes[current_pose[1]]["point"]), dtype=np.float32)
+        audio_source_position_xyz = audio_source_position_xyz - ref_position_xyz
+
+        rotation_world_agent = quat_from_angle_axis(np.deg2rad(self._compute_rotation_from_azimuth(current_pose[2])),
+                                                    np.array([0, 1, 0]))
+        # next 2 lines compute relative rotation in the counter-clockwise direction, i.e. -z to -x
+        # rotation_world_agent.inverse() * rotation_world_ref = rotation_world_agent - rotation_world_ref
+        heading_vector = quaternion_rotate_vector(rotation_world_agent.inverse() * rotation_world_ref,
+                                                  np.array([0, 0, -1]))
+        agent_heading = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
+
+        return [-agent_position_xyz[2], agent_position_xyz[0], -audio_source_position_xyz[2],
+                audio_source_position_xyz[0], agent_heading]
+    
+    def get_reference_pose(self):
+        #for use in RelativePoseSensor
+        return self.reference_pose
 
     def reset(self):
         r"""
@@ -425,17 +467,30 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         self._prev_sim_obs = sim_obs
         # Encapsule data under Observations class
         observations = self._sensor_suite.get_observations(sim_obs)
+
+        self.reference_pose = [self._receiver_position_index, self.azimuth_angle()]
+
     
         if self._get_queries_and_RIRs:
-            self.query_position_idxs = self.config_yaml.AGENT_0.QUERY_POSITION_IDXS
-            self.gt_rirs = self.generate_gt_RIRs(self.query_position_idxs)
+            query_pose_idxs = self.config_yaml.AGENT_0.QUERY_POSITION_IDXS
+            self.gt_rirs = self.generate_gt_RIRs(query_pose_idxs)
+            self.query_poses = []
+            for query in query_pose_idxs:
+                #source_idx, receiver_idx, azimuth = query
+                #source_pos = [self.graph.nodes[source_idx]['point'][0], self.graph.nodes[source_idx]['point'][2]]
+                #receiver_pos = [self.graph.nodes[receiver_idx]['point'][0], self.graph.nodes[receiver_idx]['point'][2]] 
+                #pose = source_pos + receiver_pos + [azimuth]
+                #self.query_poses.append(pose)
+
+                pose = np.array(self.compute_relative_pose(current_pose=query, ref_pose=self.reference_pose)).astype("float32")
+                self.query_poses.append(pose)
 
         return observations
     
     def get_RIR_reward_queries_RIRS(self):
-        assert self.query_position_idxs is not None
+        assert self.query_poses is not None
         assert self.gt_rirs is not None
-        return self.query_position_idxs, self.gt_rirs
+        return self.query_poses, self.gt_rirs
 
     def step(self, action, only_allowed=True):
         """
@@ -601,13 +656,13 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         logging.debug("Initial source, agent at: {}, {}, orientation: {}".
                       format(self._source_position_index, self._receiver_position_index, self.get_orientation()))
         
-    def generate_gt_RIRs(self, query_position_idxs):
-        assert query_position_idxs is not None
+    def generate_gt_RIRs(self, query_pose_idxs):
+        assert query_pose_idxs is not None
         gt_rirs = []
 
-        for query in query_position_idxs:
-            gt_rir = self.compute_RIR(query)
-            gt_rirs.append(gt_rir)
+        for query in query_pose_idxs:
+            gt_rir_mag, gt_rir_phase = self.compute_RIR(query) #how to deal with phase?
+            gt_rirs.append((gt_rir_mag,gt_rir_phase))
 
         return gt_rirs
 
@@ -622,13 +677,43 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
             except ValueError:
                 logging.warning("{} file is not readable".format(binaural_rir_file))
                 binaural_rir = np.zeros((sampling_rate, 2)).astype(np.float32)
+                sampling_freq = sampling_rate
             if len(binaural_rir) == 0:
                 logging.debug("Empty RIR file at {}".format(binaural_rir_file))
                 binaural_rir = np.zeros((sampling_rate, 2)).astype(np.float32)
+                sampling_freq = sampling_rate
         else:
             binaural_rir = np.transpose(np.array(self._sim.get_sensor_observations()["audio_sensor"]))
 
-        return binaural_rir
+        binaural_rir_full_length = np.zeros((sampling_rate, 2))
+        if binaural_rir.shape[0] > 128:
+            binaural_rir_full_length[: min(binaural_rir.shape[0], sampling_rate) - 128, :] =\
+                binaural_rir[128: min(binaural_rir.shape[0], sampling_rate), :]    # remove the first 127 zero samples
+        binaural_rir = binaural_rir_full_length
+        assert sampling_freq == sampling_rate
+
+        binaural_rir = binaural_rir.T
+        fft_windows_l_imp = librosa.stft(np.asfortranarray(binaural_rir[0]),
+                                            hop_length=self.config_yaml.AUDIO.HOP_LENGTH,
+                                            n_fft=self.config_yaml.AUDIO.N_FFT,
+                                            win_length=self.config_yaml.AUDIO.WIN_LENGTH if (self.config_yaml.AUDIO.WIN_LENGTH != 0) else None,)
+        magnitude_l_imp, phase_l_imp = librosa.magphase(fft_windows_l_imp)
+        phase_l_imp = np.angle(phase_l_imp)
+
+        fft_windows_r_imp = librosa.stft(np.asfortranarray(binaural_rir[1]),
+                                            hop_length=self.config_yaml.AUDIO.HOP_LENGTH,
+                                            n_fft=self.config_yaml.AUDIO.N_FFT,
+                                            win_length=self.config_yaml.AUDIO.WIN_LENGTH if (self.config_yaml.AUDIO.WIN_LENGTH != 0) else None,)
+        magnitude_r_imp, phase_r_imp = librosa.magphase(fft_windows_r_imp)
+        phase_r_imp = np.angle(phase_r_imp)
+
+        magnitude_imp = np.stack([magnitude_l_imp, magnitude_r_imp], axis=-1)
+        phase_imp = np.stack([phase_l_imp, phase_r_imp], axis=-1)
+
+        magnitude_imp = magnitude_imp.astype("float32")
+        phase_imp = phase_imp.astype("float32")
+
+        return magnitude_imp, phase_imp
     
     def metric_distance(self, position_a, position_bs):
         a = self.graph.nodes[position_a]['point']
@@ -687,6 +772,10 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
     def binaural_rir_dir(self):
         return os.path.join(self.config_yaml.AUDIO.RIR_DIR, self.current_scene_name)
     
+    def get_receiver_position_idx(self):
+        #for use in RelativePoseSensor
+        return self._receiver_position_index
+    
     def azimuth_angle(self):
         r"""
         get current azimuth of the agent
@@ -696,3 +785,12 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         # in mesh coordinate systems, +Y forward, +X rightward, +Z upward
         # azimuth is calculated clockwise so +Y is 0 and +X is 90
         return -(self._rotation_angle + 0) % 360
+
+    def _compute_rotation_from_azimuth(self, azimuth):
+        """
+        compute rotation angle from azimuth angle
+        :param azimuth: azimuth angle
+        :return: rotation angle
+        """
+        # rotation is calculated in the habitat coordinate frame counter-clocwise so -Z is 0 and -X is -90
+        return -(azimuth + 0) % 360

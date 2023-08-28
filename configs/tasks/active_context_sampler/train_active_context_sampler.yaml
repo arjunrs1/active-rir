@@ -1,7 +1,7 @@
 ENVIRONMENT:
   MAX_CONTEXT_LENGTH: 20
   MAX_QUERY_LENGTH: 60
-  MAX_EPISODE_STEPS: 21
+  MAX_EPISODE_STEPS: 20
   LOAD_QUERY_FOR_ARBITRARY_RIRS_FROM_DISK: True
   ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/seenEnv_eval_798datapoints_poseIdxs_splitPerSubGraph.pkl"
   ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/seenEnv_eval_798datapoints_subGraphIdxs_splitPerSubGraph.pkl"
@@ -67,8 +67,8 @@ TASK:
     FEATURE_SHAPE: [256, 259, 2] # mp3d (n_fft=511, hop_length=62, win_length=248): [256, 259, 2] 
     TYPE: "BinSpectMagSensor"
   POSE_SENSOR:
-    FEATURE_SHAPE: [3]
-    TYPE: "ActivePoseSensor"    
+    FEATURE_SHAPE: [5]
+    TYPE: "RelativePoseSensor"    
   MEASUREMENTS: [] #"ACOUSTIC_MAP_ERROR"
   GOAL_SENSOR_UUID: spect_mag
   ACTIONS:

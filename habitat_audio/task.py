@@ -194,6 +194,58 @@ class ActivePoseSensor(Sensor):
             dtype=np.float32
         )
     
+@registry.register_sensor(name="RelativePoseSensor")
+class RelativePoseSensor(Sensor):
+    r"""The agents current location and heading in the coordinate frame defined by the
+    episode, i.e. the axis it faces along and the origin is defined by its state at
+    t=0. 
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: Contains the DIMENSIONALITY field for the number of dimensions to express the agents position
+    Attributes:
+        _dimensionality: number of dimensions used to specify the agents position
+    """
+    cls_uuid: str = "pose"
+
+    def __init__(
+        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
+    ):
+        self._sim = sim
+        self._current_episode_id = None
+        super().__init__(config=config)
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return self.cls_uuid
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return SensorTypes.POSITION
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        assert hasattr(self.config, 'FEATURE_SHAPE')
+        sensor_shape = self.config.FEATURE_SHAPE
+
+        return spaces.Box(
+            low=np.finfo(np.float32).min,
+            high=np.finfo(np.float32).max,
+            shape=sensor_shape,
+            dtype=np.float32,
+        )
+
+    def get_observation(
+        self, observations, episode, *args: Any, **kwargs: Any
+    ):
+        episode_uniq_id = f"{episode.scene_id} {episode.episode_id}"
+        if episode_uniq_id != self._current_episode_id:
+            self._current_episode_id = episode_uniq_id
+
+        reference_pose = self._sim.get_reference_pose()
+
+        current_pose = [self._sim.get_receiver_position_idx(), self._sim.get_receiver_position_idx(), self._sim.azimuth_angle()]
+
+        relative_pose = self._sim.compute_relative_pose(current_pose, reference_pose)
+
+        return relative_pose
+    
 """ @registry.register_measure
 class AcousticMapError(Measure):
     rDistance to goal the episode ends

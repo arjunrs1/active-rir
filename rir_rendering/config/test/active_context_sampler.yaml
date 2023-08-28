@@ -73,7 +73,7 @@ RL:
     eps: 1e-5
     max_grad_norm: 0.5
     # decide the length of history that ppo encodes
-    num_steps: 20
+    num_steps: 19
     hidden_size: 512
     use_gae: True
     gamma: 0.99
