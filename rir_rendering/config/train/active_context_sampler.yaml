@@ -43,7 +43,7 @@ UniformContextSampler:
     direct_signal_len_in_ms: 50
 
   EvalMetrics:
-    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "diff_drr_3ms", "rel_diff_rt_startFrom60dB", "rel_diff_drr_3ms", "diff_ratio_lrEnergy", "rel_diff_cte", "rel_diff_edt"]
+    types: ["stft_l1_distance"]
     type_for_ckpt_dump: "stft_l1_distance"
 
   encode_each_modality_as_independent_context_entry: True

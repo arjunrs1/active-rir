@@ -18,7 +18,6 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.nn.parallel import DistributedDataParallel
 from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 from numpy.linalg import norm
@@ -186,8 +185,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         
         gt_rirs_mag = self.gt_rirs_mag[env_index]
         gt_rirs_phase = self.gt_rirs_phase[env_index]
-
-        a = time.time()
+        pred_spect_mag = pred_spect_mag.detach().cpu()
 
         eval_metrics_batch = compute_spect_metrics(
                             metric_types=self.config.UniformContextSampler.EvalMetrics.types,
@@ -197,8 +195,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             mask=None,
                             eval_mode=True,
                         )
-        b = time.time()
-        print("eval_metrics time:", b-a)
 
         return eval_metrics_batch, gt_rirs_mag, pred_spect_mag
 
@@ -272,6 +268,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
     ):
         pth_time = 0.0
         env_time = 0.0
+        a = time.time()
 
         t_sample_action = time.time()
         # sample actions
@@ -298,15 +295,21 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         t_step_env = time.time()
 
+        ten_s = time.time()
         outputs = self.envs.step([a[0].item() for a in actions])
+        ten_m = time.time()
+        print("tensorify time:", ten_m-ten_s)
         observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
 
         episode_rir_error = [0] * len(dones)
         for i, done in enumerate(dones):
             if done:
+                done_s = time.time()
                 observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
                 rewards[i] = 0.0
                 episode_rir_error[i] = np.array(self._get_rir_error(rollouts.observations, current_episode_step[i]+1, i)[0]['stft_l1_distance']).mean()
+                done_e = time.time()
+                print("initialize total time:", done_e-done_s)
             else:
                 observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
                 rewards[i] = self.get_reward(rollouts.observations, current_episode_step[i], i, curr_obs=observations[i], use_sparse_reward=(rollouts.step==18))
@@ -315,16 +318,17 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         env_time += time.time() - t_step_env
 
+        
         t_update_stats = time.time()
         rewards = torch.tensor(rewards, dtype=torch.float)
-        rewards = rewards.unsqueeze(1).to(device=self.device)
+        rewards = rewards.unsqueeze(1)
         episode_rir_error = torch.tensor(episode_rir_error, dtype=torch.float)
-        episode_rir_error = episode_rir_error.unsqueeze(1).to(device=self.device)
+        episode_rir_error = episode_rir_error.unsqueeze(1)
         batch = batch_obs(observations)
 
         masks = torch.tensor(
             [[0.0] if done else [1.0] for done in dones], dtype=torch.float
-        ).to(device=self.device)
+        )
 
         current_episode_reward += rewards
         current_episode_step += 1
@@ -356,6 +360,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
         batch = None
         observations = None
         episode_rir_error = None
+        b = time.time()
+        print("rir err time:", b-a)
 
         return pth_time, env_time, self.envs.num_envs
 
@@ -438,9 +444,9 @@ class ActiveRIRTrainer(BaseRLTrainer):
             dict() for _ in range(self.envs.num_envs)
         ]
 
-        self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]), device=self.device)
-        self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]), device=self.device)
-        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
+        self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
+        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
 
         #get initial observations
         observations_and_queries = self.envs.reset()
@@ -453,12 +459,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
         observations = None
 
         # episode_rewards and episode_counts accumulates over the entire training course
-        episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_steps = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_counts = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_rir_errors = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_step = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        episode_rewards = torch.zeros(self.envs.num_envs, 1)
+        episode_steps = torch.zeros(self.envs.num_envs, 1)
+        episode_counts = torch.zeros(self.envs.num_envs, 1)
+        episode_rir_errors = torch.zeros(self.envs.num_envs, 1)
+        current_episode_reward = torch.zeros(self.envs.num_envs, 1)
+        current_episode_step = torch.zeros(self.envs.num_envs, 1)
         window_episode_reward = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_step = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_counts = deque(maxlen=ppo_cfg.reward_window_size)
@@ -502,6 +508,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     env_time += delta_env_time
                     count_steps += delta_steps
 
+                agent_s = time.time()
                 delta_pth_time, value_loss, action_loss, dist_entropy = self._update_agent(
                     ppo_cfg, rollouts
                 )
@@ -583,6 +590,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 if update % self.config.CHECKPOINT_INTERVAL == 0:
                     self.save_checkpoint(f"ckpt.{count_checkpoints}.pth")
                     count_checkpoints += 1
+            agent_e = time.time()
+            print("after rollout time:", agent_e-agent_s)
 
             self.envs.close()
 
@@ -945,11 +954,14 @@ class ActiveRIRTrainer(BaseRLTrainer):
         return depth
     
     def initialize_queries_gt_rirs_and_observations(self, initial_observations, i):
-        observations, query_positions, gt_rirs = initial_observations
+        observations, query_positions, gt_rirs_mags, gt_rirs_phases = initial_observations
         observations['depth'] = observations['depth'].squeeze(-1)
         self.query_positions[i] = list(query_positions)
-        self.gt_rirs_mag[i] = torch.tensor([gt[0] for gt in gt_rirs])
-        self.gt_rirs_phase[i] = torch.tensor([gt[1] for gt in gt_rirs])
+        start = time.time()
+        self.gt_rirs_mag[i] = torch.tensor(gt_rirs_mags) #torch.tensor([gt[0] for gt in gt_rirs])
+        self.gt_rirs_phase[i] = torch.tensor(gt_rirs_phases) #torch.tensor([gt[1] for gt in gt_rirs])
+        end = time.time()
+        print("putting gt rirs on cuda time:", end-start)
         #TO DO: make this conditional on using novelty reward
         self.novelty_count[i] = {}
 
@@ -961,7 +973,7 @@ def load_rir_predictor(rir_pred_ckpt_path: str, device, distributed=False):
     torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(rir_pred_ckpt['state_dict'], "actor_critic.")
     rir_predictor = UniformContextSamplerPolicy(rir_pred_ckpt['config'])
     if distributed:
-        rir_predictor = torch.nn.DataParallel(rir_predictor, device_ids=[device],
+        rir_predictor = torch.nn.parallel.DistributedDataParallel(rir_predictor, device_ids=[device],
                                             output_device=device)
     else:
         rir_predictor = torch.nn.DataParallel(rir_predictor, device_ids=list(range(torch.cuda.device_count())),

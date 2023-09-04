@@ -151,7 +151,7 @@ class TeleportEnvTry(habitat.RLEnv):
         """
         self._env_step = 0
         observations = super.reset()
-        queries, gt_rirs = self._env._sim.get_RIR_reward_queries_RIRS()
+        queries, gt_rirs_mags, gt_rirs_phases = self._env._sim.get_RIR_reward_queries_RIRS()
         logging.debug(super().current_episode)
         return observations
 
@@ -205,9 +205,9 @@ class TeleportEnv(habitat.RLEnv):
         """
         self._env_step = 0
         observation = super().reset()
-        queries, gt_rirs = self._env._sim.get_RIR_reward_queries_RIRS()
+        queries, gt_rirs_mags, gt_rirs_phases = self._env._sim.get_RIR_reward_queries_RIRS()
         logging.debug(super().current_episode)
-        return observation, queries, gt_rirs
+        return observation, queries, gt_rirs_mags, gt_rirs_phases
 
     def step(self, *args, **kwargs):
         """

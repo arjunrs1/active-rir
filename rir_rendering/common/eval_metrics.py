@@ -4,6 +4,7 @@ import librosa.display
 import numpy as np
 from pyroomacoustics.experimental.rt60 import measure_rt60
 from scipy.io import wavfile
+import time
 
 import torch
 import torch.nn.functional as F
@@ -455,16 +456,16 @@ def compute_spect_metrics(metric_types=[],
             ("rel_diff_ratio_lrEnergy" in metric_types) or ("diff_ratio_lrEnergy" in metric_types):
         gt_spect_mag_np = gt_spect_mag
         if torch.is_tensor(gt_spect_mag_np):
-            gt_spect_mag_np = gt_spect_mag_np.cpu().numpy()
+            gt_spect_mag_np = gt_spect_mag_np.detach().cpu().numpy()
 
         assert gt_spect_phase is not None
         gt_spect_phase_np = gt_spect_phase
         if torch.is_tensor(gt_spect_phase_np):
-            gt_spect_phase_np = gt_spect_phase_np.cpu().numpy()
+            gt_spect_phase_np = gt_spect_phase_np.detach().cpu().numpy()
 
         pred_spect_mag_np = pred_spect_mag
         if torch.is_tensor(pred_spect_mag_np):
-            pred_spect_mag_np = pred_spect_mag_np.cpu().numpy()
+            pred_spect_mag_np = pred_spect_mag_np.detach().cpu().numpy()
 
         if pred_spect_phase is not None:
             pred_spect_phase_np = pred_spect_phase

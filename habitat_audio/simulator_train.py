@@ -405,7 +405,8 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         
         self._get_queries_and_RIRs = True
         self.query_poses = None
-        self.gt_rirs = None
+        self.gt_rir_mags = None
+        self.gt_rirs_phases = None
 
     def compute_relative_pose(self, current_pose=None, ref_pose=None):
         """
@@ -473,7 +474,7 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
     
         if self._get_queries_and_RIRs:
             query_pose_idxs = self.config_yaml.AGENT_0.QUERY_POSITION_IDXS
-            self.gt_rirs = self.generate_gt_RIRs(query_pose_idxs)
+            self.gt_rirs_mags, self.gt_rirs_phases = self.generate_gt_RIRs(query_pose_idxs)
             self.query_poses = []
             for query in query_pose_idxs:
                 #source_idx, receiver_idx, azimuth = query
@@ -489,8 +490,9 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
     
     def get_RIR_reward_queries_RIRS(self):
         assert self.query_poses is not None
-        assert self.gt_rirs is not None
-        return self.query_poses, self.gt_rirs
+        assert self.gt_rirs_mags is not None
+        assert self.gt_rirs_phases is not None
+        return self.query_poses, self.gt_rirs_mags, self.gt_rirs_phases
 
     def step(self, action, only_allowed=True):
         """
@@ -658,13 +660,15 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         
     def generate_gt_RIRs(self, query_pose_idxs):
         assert query_pose_idxs is not None
-        gt_rirs = []
+        gt_rirs_mags = []
+        gt_rirs_phases = []
 
         for query in query_pose_idxs:
-            gt_rir_mag, gt_rir_phase = self.compute_RIR(query) #how to deal with phase?
-            gt_rirs.append((gt_rir_mag,gt_rir_phase))
+            gt_rir_mag, gt_rir_phase = self.compute_RIR(query)
+            gt_rirs_mags.append(gt_rir_mag)
+            gt_rirs_phases.append(gt_rir_phase)
 
-        return gt_rirs
+        return gt_rirs_mags, gt_rirs_phases
 
     def compute_RIR(self, query_location):
         receiver_location, source_location, azimuth_angle = query_location
