@@ -12,7 +12,7 @@ UniformContextSampler:
   num_workers: 2
 
   num_datapoints_per_scene_train: 210
-  num_datapoints_per_scene_eval: 14
+  num_datapoints_per_scene_eval: 20 #CHANGE THIS BACK TO 14 IF IT DOESN'T WORK
 
   lr: 1.0e-4 
   eps: 1.0e-5 

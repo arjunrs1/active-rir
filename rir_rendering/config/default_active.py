@@ -21,7 +21,7 @@ _C.TRAINER_NAME = "ActiveRIRTrainer"
 _C.ENV_NAME = "ExploreEnv"
 _C.SIMULATOR_GPU_ID = 0
 _C.TORCH_GPU_ID = 0
-_C.PARALLEL_GPU_IDS = []
+_C.PARALLEL_GPU_IDS = [0,1,2,3,4,5,6,7]
 _C.MODEL_DIR = ''
 _C.TENSORBOARD_DIR = "tb"
 _C.VIDEO_OPTION = []
@@ -33,7 +33,7 @@ _C.EVAL_CKPT_PATH_DIR = "data/checkpoints"
 _C.NUM_PROCESSES = 1
 _C.SENSORS = ["BIN_SPECT_MAG_SENSOR", "POSE_SENSOR", "RGB_SENSOR", "DEPTH_SENSOR"]
 _C.CHECKPOINT_FOLDER = "data/checkpoints"
-_C.NUM_UPDATES = 30 #restore after debugging
+_C.NUM_UPDATES = 10000 #restore after debugging
 _C.LOG_INTERVAL = 10
 _C.LOG_FILE = "train.log"
 _C.CHECKPOINT_INTERVAL = 50
@@ -67,6 +67,7 @@ _C.EVAL.DATA_PARALLEL_TRAINING = False
 _C.RL = CN()
 _C.RL.SUCCESS_REWARD = 10.0
 _C.RL.SLACK_REWARD = -0.01
+_C.RL.WITH_NOVELTY_REWARD = False
 _C.RL.MEASUREMENT_RIR_REWARD_SCALE = 1.0
 _C.RL.SPARSE_RIR_REWARD_SCALE = 1.0
 _C.RL.WITH_DISTANCE_REWARD = True
@@ -99,11 +100,17 @@ _C.RL.PPO.reward_window_size = 50
 _C.RL.PPO.deterministic_eval = False
 _C.RL.PPO.use_ddppo = False
 _C.RL.PPO.ddppo_distrib_backend = "NCCL"
-_C.RL.PPO.short_rollout_threshold = 0.25
+_C.RL.PPO.short_rollout_threshold = 1.0
 _C.RL.PPO.sync_frac = 0.6
 _C.RL.PPO.master_port = 8738
 _C.RL.PPO.master_addr = "127.0.0.1"
-
+# -----------------------------------------------------------------------------
+# DEEP DISTRIBUTED PROXIMAL POLICY OPTIMIZATION (DDPPO)
+# -----------------------------------------------------------------------------
+_C.RL.DDPPO = CN()
+_C.RL.DDPPO.sync_frac = 0.6
+_C.RL.DDPPO.distrib_backend = "NCCL"
+_C.RL.DDPPO.reset_critic = True
 # -----------------------------------------------------------------------------
 # Uniform context sampler
 # -----------------------------------------------------------------------------

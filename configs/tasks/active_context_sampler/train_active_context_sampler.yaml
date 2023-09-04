@@ -89,14 +89,14 @@ TASK:
 
 DATASET:
   TYPE: "Exploration"
-  SPLIT: "debug_telephone"
+  SPLIT: "train_telephone"
   CONTENT_SCENES: ["*"]
   VERSION: 'v1'
   SCENES_DIR: "data/scene_datasets/mp3d"
   DATA_PATH: "data/datasets/audionav/mp3d/{version}/{split}/{split}.json.gz"
 
 
-NUM_UPDATES: 30
+NUM_UPDATES: 10000
 LOG_INTERVAL: 10
 CHECKPOINT_INTERVAL: 50
 VIDEO_OPTION: []

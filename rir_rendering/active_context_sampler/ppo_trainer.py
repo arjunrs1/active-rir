@@ -18,6 +18,7 @@ import math
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel
 from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 from numpy.linalg import norm
@@ -55,14 +56,31 @@ class ActiveRIRTrainer(BaseRLTrainer):
         self.actor_critic = None
         self.agent = None
         self.envs = None
-        self.rir_predictor = load_rir_predictor(self.config.RL.PRETRAINED_RIR_PREDICTOR_PATH, self.config)
         self.previous_measurement_error = None
 
     def get_reward_placeholder(self, prev_observations, current_episode_step, env_index, curr_obs=None, use_sparse_reward=False):
         return 0
+    
+    def get_novelty_reward(self, env_index, curr_obs):
+        if curr_obs is not None:
+            pose = tuple(curr_obs['pose'])
+            if pose in self.novelty_count[env_index].keys():
+                novelty_reward = 1/math.sqrt(self.novelty_count[env_index][pose])
+                self.novelty_count[env_index][pose] += 1
+                return novelty_reward
+            else:
+                self.novelty_count[env_index][pose] = 1
+                return 1
+        else:
+            return 0
 
     def get_reward(self, prev_observations, current_episode_step, env_index, curr_obs=None, use_sparse_reward=False):
         reward = 0
+
+        if self.config.RL.WITH_NOVELTY_REWARD:
+            reward += self.get_novelty_reward(env_index, curr_obs)
+            #TO DO: add if statement for self.config.RL.USE_RIR_REWARD, if true then continue, else return current reward
+            return reward
 
         #compute RIR measurement delta reward:
 
@@ -95,8 +113,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
     def _get_rir_error(self, prev_observations, current_episode_step, env_index, curr_obs=None):
         
         context = self._format_observation_rollout(prev_observations, current_episode_step, env_index, curr_obs=curr_obs)
-        return self._current_measurement_error(context, env_index)
-
+        error_metrics = self._current_measurement_error(context, env_index)
+        return error_metrics
 
     def _format_observation_rollout(self, prev_observations, num_masked_pos, env_index, curr_obs=None):
 
@@ -116,11 +134,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
             for key in full_dict.keys():
                 full_dict[key] = torch.stack(full_dict[key], dim=0)
 
-            print("BEFORE")
-            for key in full_dict:
-                print(key)
-                print(full_dict[key].shape)
-
             pad_amount = int(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-len(prev_observations))
             view_echo_padding = (0,0,0,0,0,0,0,0,0,pad_amount)
             pose_padding = (0,0,0,0,0,pad_amount)
@@ -130,10 +143,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
             full_dict['pose'] = F.pad(full_dict['pose'], pose_padding)#.permute(1,0,2)
 
             prev_observations = full_dict
-            print("AFTER")
-            for key in prev_observations:
-                print(key)
-                print(prev_observations[key].shape)
 
 
         if not isinstance(num_masked_pos, int):
@@ -156,7 +165,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
         context['query_mask'] = query_mask
 
         if curr_obs is not None:
-            print("KUDIYAAN")
             curr_rgb = torch.tensor(curr_obs['rgb']).unsqueeze(0)
             curr_depth = torch.tensor(curr_obs['depth']).unsqueeze(0)
             curr_echo = torch.tensor(curr_obs['bin_spect_mag']).unsqueeze(0)
@@ -166,10 +174,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
             context['context_poses'][:,num_masked_pos-1,::] = curr_pose
 
         for key in context:
-            #print(key)
             if key in ['context_views', 'context_echoes', 'context_poses']:
                 context[key] = context[key][:,:self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH,::]
-            #print(context[key].shape)
 
         return context
 
@@ -178,10 +184,10 @@ class ActiveRIRTrainer(BaseRLTrainer):
         pred_spect_mag = torch.exp(pred_rirs.view(-1, *pred_rirs.size()[2:]))\
                                                      - self.config.UniformContextSampler.log_gt_eps
         
-        gt_rirs = self.gt_rirs[env_index]
-        gt_rirs_mag = torch.tensor([gt[0] for gt in gt_rirs]).detach().cpu()
-        gt_rirs_phase = torch.tensor([gt[1] for gt in gt_rirs]).detach().cpu()
-        pred_spect_mag = pred_spect_mag.detach().cpu()
+        gt_rirs_mag = self.gt_rirs_mag[env_index]
+        gt_rirs_phase = self.gt_rirs_phase[env_index]
+
+        a = time.time()
 
         eval_metrics_batch = compute_spect_metrics(
                             metric_types=self.config.UniformContextSampler.EvalMetrics.types,
@@ -191,6 +197,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             mask=None,
                             eval_mode=True,
                         )
+        b = time.time()
+        print("eval_metrics time:", b-a)
 
         return eval_metrics_batch, gt_rirs_mag, pred_spect_mag
 
@@ -309,14 +317,14 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         t_update_stats = time.time()
         rewards = torch.tensor(rewards, dtype=torch.float)
-        rewards = rewards.unsqueeze(1)
+        rewards = rewards.unsqueeze(1).to(device=self.device)
         episode_rir_error = torch.tensor(episode_rir_error, dtype=torch.float)
-        episode_rir_error = episode_rir_error.unsqueeze(1)
+        episode_rir_error = episode_rir_error.unsqueeze(1).to(device=self.device)
         batch = batch_obs(observations)
 
         masks = torch.tensor(
             [[0.0] if done else [1.0] for done in dones], dtype=torch.float
-        )
+        ).to(device=self.device)
 
         current_episode_reward += rewards
         current_episode_step += 1
@@ -347,6 +355,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         #clear CUDA memory
         batch = None
         observations = None
+        episode_rir_error = None
 
         return pth_time, env_time, self.envs.num_envs
 
@@ -401,6 +410,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
             if torch.cuda.is_available()
             else torch.device("cpu")
         )
+        self.rir_predictor = load_rir_predictor(self.config.RL.PRETRAINED_RIR_PREDICTOR_PATH, self.device)
+
         if not os.path.isdir(self.config.CHECKPOINT_FOLDER):
             os.makedirs(self.config.CHECKPOINT_FOLDER)
         self._setup_actor_critic_agent(self.config)
@@ -423,11 +434,13 @@ class ActiveRIRTrainer(BaseRLTrainer):
             [] for _ in range(self.envs.num_envs)
         ]
 
-        self.gt_rirs = [
-            [] for _ in range(self.envs.num_envs)
+        self.novelty_count = [
+            dict() for _ in range(self.envs.num_envs)
         ]
 
-        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
+        self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]), device=self.device)
+        self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]), device=self.device)
+        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1, device=self.device)
 
         #get initial observations
         observations_and_queries = self.envs.reset()
@@ -440,12 +453,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
         observations = None
 
         # episode_rewards and episode_counts accumulates over the entire training course
-        episode_rewards = torch.zeros(self.envs.num_envs, 1)
-        episode_steps = torch.zeros(self.envs.num_envs, 1)
-        episode_counts = torch.zeros(self.envs.num_envs, 1)
-        episode_rir_errors = torch.zeros(self.envs.num_envs, 1)
-        current_episode_reward = torch.zeros(self.envs.num_envs, 1)
-        current_episode_step = torch.zeros(self.envs.num_envs, 1)
+        episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        episode_steps = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        episode_counts = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        episode_rir_errors = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        current_episode_step = torch.zeros(self.envs.num_envs, 1, device=self.device)
         window_episode_reward = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_step = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_counts = deque(maxlen=ppo_cfg.reward_window_size)
@@ -596,6 +609,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
         # Map location CPU is almost always better than mapping to a CUDA device.
         ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
 
+        self.rir_predictor = load_rir_predictor(self.config.RL.PRETRAINED_RIR_PREDICTOR_PATH, self.device)
+
         if self.config.EVAL.USE_CKPT_CONFIG:
             config = self._setup_eval_config(ckpt_dict["config"])
         else:
@@ -655,15 +670,17 @@ class ActiveRIRTrainer(BaseRLTrainer):
             )
             self.metric_uuids.append(measure_type(sim=None, task=None, config=None)._get_uuid())
 
-        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
-
         self.query_positions = [
             [] for _ in range(self.envs.num_envs)
         ]
 
-        self.gt_rirs = [
-            [] for _ in range(self.envs.num_envs)
+        self.novelty_count = [
+            dict() for _ in range(self.envs.num_envs)
         ]
+
+        self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]), device=self.device)
+        self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]), device=self.device)
+        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1, device=self.device)
 
         full_obs = []
         observations_and_queries = self.envs.reset()
@@ -676,7 +693,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
 
         current_episode_step = torch.zeros(
-            self.envs.num_envs, 1
+            self.envs.num_envs, 1, device=self.device
         )
         current_episode_reward = torch.zeros(
             self.envs.num_envs, 1, device=self.device
@@ -738,17 +755,16 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 list(x) for x in zip(*outputs)
             ]
 
-            episode_rir_error = [0] * len(dones)
-            for i, done in enumerate(dones):
-                if done:
-                    observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
-                    rewards[i] = 0.0
-                    episode_rir_error[i] = np.array(self._get_rir_error(full_obs, self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS, i)[0]['stft_l1_distance']).mean()
-                else:
-                    observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
-                    print("curr ep step:")
-                    print(current_episode_step[i])
-                    rewards[i] = self.get_reward(full_obs, current_episode_step[i], i, curr_obs=observations[i], use_sparse_reward=(current_episode_step[i]==18))
+            with torch.no_grad():
+                episode_rir_error = [0] * len(dones)
+                for i, done in enumerate(dones):
+                    if done:
+                        observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
+                        rewards[i] = 0.0
+                        episode_rir_error[i] = np.array(self._get_rir_error(full_obs, self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS, i)[0]['stft_l1_distance']).mean()
+                    else:
+                        observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
+                        rewards[i] = self.get_reward(full_obs, current_episode_step[i], i, curr_obs=observations[i], use_sparse_reward=(current_episode_step[i]==18))
 
             current_episode_step += 1
             for i in range(self.envs.num_envs):
@@ -932,23 +948,24 @@ class ActiveRIRTrainer(BaseRLTrainer):
         observations, query_positions, gt_rirs = initial_observations
         observations['depth'] = observations['depth'].squeeze(-1)
         self.query_positions[i] = list(query_positions)
-        self.gt_rirs[i] = list(gt_rirs)
+        self.gt_rirs_mag[i] = torch.tensor([gt[0] for gt in gt_rirs])
+        self.gt_rirs_phase[i] = torch.tensor([gt[1] for gt in gt_rirs])
+        #TO DO: make this conditional on using novelty reward
+        self.novelty_count[i] = {}
+
         return observations
 
 
-def load_rir_predictor(rir_pred_ckpt_path: str, cfg):
-    device = (
-            torch.device("cuda", cfg.TORCH_GPU_ID)
-            if torch.cuda.is_available()
-            else torch.device("cpu")
-        )
+def load_rir_predictor(rir_pred_ckpt_path: str, device, distributed=False):
     rir_pred_ckpt = torch.load(rir_pred_ckpt_path, map_location=device)
     torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(rir_pred_ckpt['state_dict'], "actor_critic.")
-
     rir_predictor = UniformContextSamplerPolicy(rir_pred_ckpt['config'])
-    rir_predictor = torch.nn.DataParallel(rir_predictor, device_ids=list(range(torch.cuda.device_count())),
-                                                output_device=0)
-    
+    if distributed:
+        rir_predictor = torch.nn.DataParallel(rir_predictor, device_ids=[device],
+                                            output_device=device)
+    else:
+        rir_predictor = torch.nn.DataParallel(rir_predictor, device_ids=list(range(torch.cuda.device_count())),
+                                            output_device=device)
     rir_predictor.load_state_dict(rir_pred_ckpt['state_dict'])
     rir_predictor.eval()
     rir_predictor.to(device)
