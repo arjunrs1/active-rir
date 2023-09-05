@@ -102,8 +102,8 @@ _C.RL.PPO.use_ddppo = False
 _C.RL.PPO.ddppo_distrib_backend = "NCCL"
 _C.RL.PPO.short_rollout_threshold = 1.0
 _C.RL.PPO.sync_frac = 0.6
-_C.RL.PPO.master_port = 8738
-_C.RL.PPO.master_addr = "127.0.0.1"
+_C.RL.PPO.master_port = 7738 #8738
+_C.RL.PPO.master_addr = "127.0.0.9"
 # -----------------------------------------------------------------------------
 # DEEP DISTRIBUTED PROXIMAL POLICY OPTIMIZATION (DDPPO)
 # -----------------------------------------------------------------------------

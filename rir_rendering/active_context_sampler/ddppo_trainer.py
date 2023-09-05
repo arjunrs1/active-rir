@@ -69,125 +69,6 @@ class DDPPOTrainer(ActiveRIRTrainer):
         
         super().__init__(config)
 
-    def get_reward(self, prev_observations, current_episode_step, env_index, curr_obs=None, use_sparse_reward=False):
-        reward = 0
-
-        #compute RIR measurement delta reward:
-
-        if int(current_episode_step) != 0:
-            curr_rir_error = self._curr_rir_error[env_index]
-        else:
-            curr_rir_error = np.abs(np.array(
-                self._get_rir_error(prev_observations, current_episode_step+1, env_index)[0]['stft_l1_distance']
-            )).mean()
-
-        if curr_obs is not None:
-            next_rir_error = np.abs(np.array(
-                self._get_rir_error(prev_observations, current_episode_step+2, env_index, curr_obs=curr_obs)[0]['stft_l1_distance']
-            )).mean()
-        else:
-            next_rir_error = 0
-        
-        reward += (
-            next_rir_error - curr_rir_error
-        ) * self.config.RL.MEASUREMENT_RIR_REWARD_SCALE
-
-        if use_sparse_reward:
-            assert current_episode_step + 2 == self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH
-            reward += -self.config.RL.SPARSE_RIR_REWARD_SCALE * next_rir_error
-
-        self._curr_rir_error[env_index] = next_rir_error
-
-        return reward
-    
-    def _get_rir_error(self, prev_observations, current_episode_step, env_index, curr_obs=None):
-        
-        context = self._format_observation_rollout(prev_observations, current_episode_step, env_index, curr_obs=curr_obs)
-        return self._current_measurement_error(context, env_index)
-
-
-    def _format_observation_rollout(self, prev_observations, num_masked_pos, env_index, curr_obs=None):
-
-        #for compatibilty with obs list passed during evaluation
-        if isinstance(prev_observations, list):
-            full_dict = {
-                'rgb': [],
-                'depth': [],
-                'bin_spect_mag': [],
-                'pose': []
-            }
-            for obs_dict in prev_observations:
-                full_dict['rgb'].append(obs_dict['rgb'])
-                full_dict['depth'].append(self.normalize_depth(obs_dict['depth']))
-                full_dict['bin_spect_mag'].append(obs_dict['bin_spect_mag'])
-                full_dict['pose'].append(obs_dict['pose'])
-            for key in full_dict.keys():
-                full_dict[key] = torch.stack(full_dict[key], dim=0)
-
-            pad_amount = int(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-len(prev_observations))
-            view_echo_padding = (0,0,0,0,0,0,0,0,0,pad_amount)
-            pose_padding = (0,0,0,0,0,pad_amount)
-            full_dict['rgb'] = F.pad(full_dict['rgb'], view_echo_padding)#.permute(1,0,2,3,4)
-            full_dict['depth'] = F.pad(full_dict['depth'], view_echo_padding)#.permute(1,0,2,3,4)
-            full_dict['bin_spect_mag'] = F.pad(full_dict['bin_spect_mag'], view_echo_padding)#.permute(1,0,2,3,4)
-            full_dict['pose'] = F.pad(full_dict['pose'], pose_padding)#.permute(1,0,2)
-
-            prev_observations = full_dict
-
-
-        if not isinstance(num_masked_pos, int):
-            num_masked_pos = int(num_masked_pos.item())
-
-        context_views = torch.unsqueeze(torch.cat((prev_observations['rgb'], prev_observations['depth']), dim=4).permute(1, 0, 2, 3, 4)[env_index],0)
-        context_echoes = torch.unsqueeze(prev_observations['bin_spect_mag'].permute(1,0,2,3,4)[env_index],0)
-        context_poses = torch.unsqueeze(prev_observations['pose'].permute(1,0,2)[env_index],0)
-        context_mask = torch.zeros(1, self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH) 
-        context_mask[:, :int(num_masked_pos)] = 1
-        query_poses = torch.unsqueeze(torch.tensor(self.query_positions[env_index]),0)
-        query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
-        
-        context = {}
-        context['context_views'] = context_views
-        context['context_echoes'] = context_echoes
-        context['context_poses'] = context_poses
-        context['context_mask'] = context_mask
-        context['query_poses'] = query_poses
-        context['query_mask'] = query_mask
-
-        if curr_obs is not None:
-            curr_rgb = torch.tensor(curr_obs['rgb']).unsqueeze(0)
-            curr_depth = torch.tensor(curr_obs['depth']).unsqueeze(0)
-            curr_echo = torch.tensor(curr_obs['bin_spect_mag']).unsqueeze(0)
-            curr_pose = torch.tensor(curr_obs['pose']).unsqueeze(0)
-            context['context_views'][:,num_masked_pos-1,::] = torch.cat((curr_rgb, curr_depth), dim=3)
-            context['context_echoes'][:,num_masked_pos-1,::] = curr_echo
-            context['context_poses'][:,num_masked_pos-1,::] = curr_pose
-
-        for key in context:
-            if key in ['context_views', 'context_echoes', 'context_poses']:
-                context[key] = context[key][:,:self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH,::]
-
-        return context
-
-    def _current_measurement_error(self, context_observations, env_index):  
-        pred_rirs = self.rir_predictor(context_observations)
-        pred_spect_mag = torch.exp(pred_rirs.view(-1, *pred_rirs.size()[2:]))\
-                                                     - self.config.UniformContextSampler.log_gt_eps
-        
-        gt_rirs_mag = self.gt_rirs_mag[env_index]
-        gt_rirs_phase = self.gt_rirs_phase[env_index]
-
-        eval_metrics_batch = compute_spect_metrics(
-                            metric_types=self.config.UniformContextSampler.EvalMetrics.types,
-                            gt_spect_mag=gt_rirs_mag,
-                            gt_spect_phase=gt_rirs_phase,
-                            pred_spect_mag=pred_spect_mag,
-                            mask=None,
-                            eval_mode=True,
-                        )
-
-        return eval_metrics_batch, gt_rirs_mag, pred_spect_mag
-
     def _setup_actor_critic_agent(self, cfg: Config, observation_space=None) -> None:
         r"""Sets up actor critic and agent for DD-PPO.
 
@@ -277,14 +158,14 @@ class DDPPOTrainer(ActiveRIRTrainer):
 
         t_update_stats = time.time()
         rewards = torch.tensor(rewards, dtype=torch.float)
-        rewards = rewards.unsqueeze(1).to(self.device)
+        rewards = rewards.unsqueeze(1).to(device=self.device)
         episode_rir_error = torch.tensor(episode_rir_error, dtype=torch.float)
-        episode_rir_error = episode_rir_error.unsqueeze(1).to(self.device)
+        episode_rir_error = episode_rir_error.unsqueeze(1).to(device=self.device)
         batch = batch_obs(observations)
 
         masks = torch.tensor(
             [[0.0] if done else [1.0] for done in dones], dtype=torch.float
-        ).to(self.device)
+        ).to(device=self.device)
 
         current_episode_reward += rewards
         current_episode_step += 1
@@ -319,35 +200,6 @@ class DDPPOTrainer(ActiveRIRTrainer):
 
         return pth_time, env_time, self.envs.num_envs
 
-    def _update_agent(self, ppo_cfg, rollouts):
-        t_update_model = time.time()
-        with torch.no_grad():
-            last_observation = {
-                k: v[-1] for k, v in rollouts.observations.items()
-            }
-            next_value = self.actor_critic.get_value(
-                last_observation,
-                rollouts.recurrent_hidden_states[-1],
-                rollouts.prev_actions[-1],
-                rollouts.masks[-1],
-                rollouts.prev_obs_hidden_states[-1],
-            ).detach()
-
-        rollouts.compute_returns(
-            next_value, ppo_cfg.use_gae, ppo_cfg.gamma, ppo_cfg.tau
-        )
-
-        value_loss, action_loss, dist_entropy = self.agent.update(rollouts)
-
-        rollouts.after_update()
-
-        return (
-            time.time() - t_update_model,
-            value_loss,
-            action_loss,
-            dist_entropy,
-        )
-
     def train(self) -> None:
         r"""Main method for training DD-PPO.
 
@@ -355,7 +207,9 @@ class DDPPOTrainer(ActiveRIRTrainer):
             None
         """
         self.local_rank, tcp_store = init_distrib_slurm(
-            self.config.RL.DDPPO.distrib_backend
+            self.config.RL.DDPPO.distrib_backend,
+            master_port=self.config.RL.PPO.master_port,
+            master_addr=self.config.RL.PPO.master_addr,
         )
         add_signal_handlers()
 
@@ -418,18 +272,6 @@ class DDPPOTrainer(ActiveRIRTrainer):
             )
             logger.info(f"config: {self.config}")
 
-        self.query_positions = [
-            [] for _ in range(self.envs.num_envs)
-        ]
-
-        self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]), device=self.device)
-        self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]), device=self.device)
-
-        #get initial observations
-        observations_and_queries = self.envs.reset()
-        observations = [self.initialize_queries_gt_rirs_and_observations(obs, i) for i, obs in enumerate(observations_and_queries)]
-        batch = batch_obs(observations, device=self.device)
-
         rollouts = RolloutStorage(
             ppo_cfg.num_steps,
             self.envs.num_envs,
@@ -439,12 +281,28 @@ class DDPPOTrainer(ActiveRIRTrainer):
         )
         rollouts.to(self.device)
 
+        self.query_positions = [
+            [] for _ in range(self.envs.num_envs)
+        ]
+
+        self.novelty_count = [
+            dict() for _ in range(self.envs.num_envs)
+        ]
+
+        self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
+        self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
+        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
+
+        #get initial observations
+        observations_and_queries = self.envs.reset()
+        observations = [self.initialize_queries_gt_rirs_and_observations(obs, i) for i, obs in enumerate(observations_and_queries)]
+        batch = batch_obs(observations, device=self.device)
         for sensor in rollouts.observations:
             rollouts.observations[sensor][0].copy_(batch[sensor])
 
         batch = None
         observations = None
-        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
+        
 
         # episode_rewards and episode_counts accumulates over the entire training course
         episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device)

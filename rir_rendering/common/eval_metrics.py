@@ -311,12 +311,12 @@ def stft_l1_distance(gt_spect_mag=None, gt_spect_phase=None, pred_spect_mag=None
 
     if mask is None:
         if eval_mode:
-            ls_dist = torch.mean(F.l1_loss(pred_spect_mag, gt_spect_mag, reduction='none').view(pred_spect_mag.size(0), -1), dim=-1)
+            ls_dist = torch.mean(F.l1_loss(pred_spect_mag, gt_spect_mag, reduction='none').reshape(pred_spect_mag.size(0), -1), dim=-1)
         else:
             ls_dist = F.l1_loss(pred_spect_mag, gt_spect_mag)
     else:
         if eval_mode:
-            ls_dist = torch.mean(F.l1_loss(pred_spect_mag, gt_spect_mag, reduction='none').view(pred_spect_mag.size(0), -1), dim=-1)
+            ls_dist = torch.mean(F.l1_loss(pred_spect_mag, gt_spect_mag, reduction='none').reshape(pred_spect_mag.size(0), -1), dim=-1)
         else:
             # not counting the contribution from masked out locations in the batch
             ls_dist = torch.sum(torch.abs(pred_spect_mag - gt_spect_mag)) / (torch.sum(mask) * np.prod(list(pred_spect_mag.size())[1:]))

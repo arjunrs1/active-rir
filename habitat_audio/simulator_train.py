@@ -477,12 +477,6 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
             self.gt_rirs_mags, self.gt_rirs_phases = self.generate_gt_RIRs(query_pose_idxs)
             self.query_poses = []
             for query in query_pose_idxs:
-                #source_idx, receiver_idx, azimuth = query
-                #source_pos = [self.graph.nodes[source_idx]['point'][0], self.graph.nodes[source_idx]['point'][2]]
-                #receiver_pos = [self.graph.nodes[receiver_idx]['point'][0], self.graph.nodes[receiver_idx]['point'][2]] 
-                #pose = source_pos + receiver_pos + [azimuth]
-                #self.query_poses.append(pose)
-
                 pose = np.array(self.compute_relative_pose(current_pose=query, ref_pose=self.reference_pose)).astype("float32")
                 self.query_poses.append(pose)
 
@@ -492,7 +486,7 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         assert self.query_poses is not None
         assert self.gt_rirs_mags is not None
         assert self.gt_rirs_phases is not None
-        return self.query_poses, self.gt_rirs_mags, self.gt_rirs_phases
+        return self.query_poses, np.array(self.gt_rirs_mags), np.array(self.gt_rirs_phases)
 
     def step(self, action, only_allowed=True):
         """
