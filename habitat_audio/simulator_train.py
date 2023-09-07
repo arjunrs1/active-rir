@@ -555,6 +555,9 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
 
             self.set_agent_state(list(self.graph.nodes[self._receiver_position_index]['point']),
                                  quat_from_angle_axis(np.deg2rad(self._rotation_angle), np.array([0, 1, 0])))
+            
+        #TO DO: change to sample budget, where there are 6 actions: FORWARD_SAMPLE, RIGHT_SAMPLE, LEFT_SAMPLE, FORWARD, RIGHT, LEFT
+        #Only the actions with SAMPLE will add to the episode step count.
         self._episode_step_count += 1
 
         # log debugging info
