@@ -289,6 +289,10 @@ class DDPPOTrainer(ActiveRIRTrainer):
             dict() for _ in range(self.envs.num_envs)
         ]
 
+        self.context_observations = [
+            [] for _ in range(self.envs.num_envs)
+        ]
+
         self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
         self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
         self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)

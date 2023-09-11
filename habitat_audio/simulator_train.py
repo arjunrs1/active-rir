@@ -405,7 +405,7 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         
         self._get_queries_and_RIRs = True
         self.query_poses = None
-        self.gt_rir_mags = None
+        self.gt_rirs_mags = None
         self.gt_rirs_phases = None
 
     def compute_relative_pose(self, current_pose=None, ref_pose=None):

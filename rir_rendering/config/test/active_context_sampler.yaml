@@ -7,13 +7,14 @@ VIDEO_OPTION: []
 TENSORBOARD_DIR: "tb"
 VIDEO_DIR: "video_dir"
 TEST_EPISODE_COUNT: 25
-EVAL_CKPT_PATH_DIR: "data/new_checkpoints"
+#EVAL_CKPT_PATH_DIR: "data/new_checkpoints"
 NUM_ENVIRONMENTS: 6
 SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"]
-CHECKPOINT_FOLDER: "data/new_checkpoints"
+#CHECKPOINT_FOLDER: "data/new_checkpoints"
 
 EVAL:
-  SPLIT: "val_telephone"
+  SPLIT: "test_telephone"
+  USE_CKPT_CONFIG: True
 
 NUM_PROCESSES: 10
 
@@ -22,7 +23,7 @@ UniformContextSampler:
   batch_size: 8
   num_workers: 8
 
-  num_datapoints_per_scene_eval: 14
+  num_datapoints_per_scene_eval: 20
 
   predict_in_logspace: True
   log1p_gt: False
