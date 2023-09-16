@@ -32,7 +32,7 @@ UniformContextSampler:
   log_gt_eps: 1.0e-8
 
   EvalMetrics:
-    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "rel_diff_rt_startFrom60dB", "rel_diff_edt"]
+    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "rel_diff_rt_startFrom60dB", "rel_diff_edt", "diff_drr_3ms", "rel_diff_drr_3ms", "diff_ratio_lrEnergy"] #
 
   encode_each_modality_as_independent_context_entry: True
   append_modality_type_tag_encoding_to_each_modality_encoding: True

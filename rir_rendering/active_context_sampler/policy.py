@@ -173,6 +173,9 @@ class ContextEncoderNet(Net):
         if self._sampler_cfg.encode_each_modality_as_independent_context_entry:
             n_input_feats_fusion_context_enc = sum([context_enc.n_out_feats for context_enc in [self.visual_context_enc, self.audio_context_enc, self.pose_context_enc]])
             self.fusion_context_enc = FusionNet(trainer_cfg=self._sampler_cfg, n_input_feats=n_input_feats_fusion_context_enc)
+            self.fused_context_layer = nn.Sequential(
+                    nn.Linear(1024, 512, bias=False),
+                )
         else:
             raise ValueError
 
@@ -219,12 +222,16 @@ class ContextEncoderNet(Net):
 
         #concatenate encoded modalities
         x1 = self.fusion_context_enc(torch.cat(context_feats, dim=1).unsqueeze(0))
+        x1 = self.fused_context_layer(x1)
 
         #pass modality through context encoder RNN
-        encoded_obs, prev_obs_hidden_states1 = self.context_encoder(x1, prev_obs_hidden_states, masks)
+        #encoded_obs, prev_obs_hidden_states1 = self.context_encoder(x1, prev_obs_hidden_states, masks)
+        #print("encoded obs shape:")
+        #print(encoded_obs.shape)
+        prev_obs_hidden_states1 = None
 
         #pass encoded_observation state to state encoder
-        x2, rnn_hidden_states1 = self.state_encoder(encoded_obs, rnn_hidden_states, masks)
+        x2, rnn_hidden_states1 = self.state_encoder(x1, rnn_hidden_states, masks)
 
         if torch.isnan(x2).any().item():
             for key in observations:

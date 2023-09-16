@@ -82,32 +82,31 @@ class ActiveRIRTrainer(BaseRLTrainer):
         if self.config.RL.WITH_NOVELTY_REWARD:
             reward += self.get_novelty_reward(env_index, curr_obs)
             #TO DO: add if statement for self.config.RL.USE_RIR_REWARD, if true then continue, else return current reward
-            return reward
         
         #TO DO: add option for rir error (i.e. if self.config.RL.WITH_RIR_ERROR_REWARD:)
+        if self.config.RL.WITH_RIR_REWARD:
+            if len(prev_observations) != 1:
+                curr_rir_error = self._curr_rir_error[env_index]
+            else:
+                curr_rir_error = np.abs(np.array(
+                    self._get_rir_error(prev_observations, len(prev_observations), env_index)[0]['stft_l1_distance']
+                )).mean()
 
-        if len(prev_observations) != 1:
-            curr_rir_error = self._curr_rir_error[env_index]
-        else:
-            curr_rir_error = np.abs(np.array(
-                self._get_rir_error(prev_observations, len(prev_observations), env_index)[0]['stft_l1_distance']
-            )).mean()
+            if curr_obs is not None:
+                next_rir_error = np.abs(np.array(
+                    self._get_rir_error(prev_observations, len(prev_observations)+1, env_index, curr_obs=curr_obs)[0]['stft_l1_distance']
+                )).mean()
+            else:
+                next_rir_error = 0
+            
+            reward += (
+                next_rir_error - curr_rir_error
+            ) * self.config.RL.MEASUREMENT_RIR_REWARD_SCALE
 
-        if curr_obs is not None:
-            next_rir_error = np.abs(np.array(
-                self._get_rir_error(prev_observations, len(prev_observations)+1, env_index, curr_obs=curr_obs)[0]['stft_l1_distance']
-            )).mean()
-        else:
-            next_rir_error = 0
-        
-        reward += (
-            next_rir_error - curr_rir_error
-        ) * self.config.RL.MEASUREMENT_RIR_REWARD_SCALE
+            if use_sparse_reward:
+                reward += -self.config.RL.SPARSE_RIR_REWARD_SCALE * next_rir_error
 
-        if use_sparse_reward:
-            reward += -self.config.RL.SPARSE_RIR_REWARD_SCALE * next_rir_error
-
-        self._curr_rir_error[env_index] = next_rir_error
+            self._curr_rir_error[env_index] = next_rir_error
 
         return reward
     

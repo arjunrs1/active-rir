@@ -519,7 +519,9 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
                     direction = int(np.around(np.rad2deg(np.arctan2(p2[2] - p1[2], p2[0] - p1[0])))) % 360
                     if direction == self.get_orientation():
                         self._receiver_position_index = neighbor
+                        self._source_position_index = self._receiver_position_index
                         self._previous_step_collided = False
+                        break
 
             if action == HabitatSimActions.TURN_LEFT:
                 self._rotation_angle = (prev_rotation_angle + 90) % 360

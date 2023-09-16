@@ -1,7 +1,7 @@
 ENVIRONMENT:
   MAX_CONTEXT_LENGTH: 20
   MAX_QUERY_LENGTH: 60
-  MAX_EPISODE_STEPS: 500
+  MAX_EPISODE_STEPS: 200
   LOAD_QUERY_FOR_ARBITRARY_RIRS_FROM_DISK: True
   ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/seenEnv_eval_798datapoints_poseIdxs_splitPerSubGraph.pkl"
   ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/seenEnv_eval_798datapoints_subGraphIdxs_splitPerSubGraph.pkl"
@@ -89,7 +89,7 @@ TASK:
 
 DATASET:
   TYPE: "Exploration"
-  SPLIT: "train_telephone"
+  SPLIT: "small_telephone"
   CONTENT_SCENES: ["*"]
   VERSION: 'v1'
   SCENES_DIR: "data/scene_datasets/mp3d"

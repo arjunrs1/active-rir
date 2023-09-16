@@ -93,7 +93,7 @@ TASK:
 
 DATASET:
   TYPE: "Exploration"
-  SPLIT: "train_telephone"
+  SPLIT: "small_val_telephone"
   CONTENT_SCENES: ["*"]
   VERSION: 'v1'
   SCENES_DIR: "data/scene_datasets/mp3d"

@@ -138,6 +138,7 @@ _C.UniformContextSampler.MemoryNet = CN()
 _C.UniformContextSampler.MemoryNet.type = "transformer" 
 _C.UniformContextSampler.MemoryNet.Transformer = CN()
 _C.UniformContextSampler.MemoryNet.Transformer.no_self_attn_in_decoder = False
+_C.UniformContextSampler.MemoryNet.Transformer.use_modified_input_size = False
 _C.UniformContextSampler.MemoryNet.Transformer.input_size = 1024
 _C.UniformContextSampler.MemoryNet.Transformer.hidden_size = 1024
 _C.UniformContextSampler.MemoryNet.Transformer.num_encoder_layers = 2
