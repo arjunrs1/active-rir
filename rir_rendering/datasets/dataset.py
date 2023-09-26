@@ -232,9 +232,9 @@ class UniformContextSamplerDataset(Dataset):
         """
         assert self._eval_mode
 
-        with open(os.path.join(self.ckpt_rootdir_path,
-                               f"{self.split}_{self.num_datapoints_per_epoch}datapoints_sceneNames.pkl"), "wb") as fo:
-            pickle.dump(self._all_eval_datapoints_sceneNames, fo, protocol=pickle.HIGHEST_PROTOCOL)
+        #with open(os.path.join(self.ckpt_rootdir_path,
+        #                       f"{self.split}_{self.num_datapoints_per_epoch}datapoints_sceneNames.pkl"), "wb") as fo:
+        #   pickle.dump(self._all_eval_datapoints_sceneNames, fo, protocol=pickle.HIGHEST_PROTOCOL)
 
         with open(os.path.join(self.ckpt_rootdir_path,
                                f"{self.split}_{self.num_datapoints_per_epoch}datapoints_sampledEchoPoseIdxs.pkl"), "wb")\
@@ -248,6 +248,9 @@ class UniformContextSamplerDataset(Dataset):
 
     def __len__(self):
         return self.num_datapoints_per_epoch
+
+    def len_current_scenes_list(self):
+        return len(self._all_eval_datapoints_sceneNames)
 
     def __getitem__(self, item):
         this_datapoint = self._get_datapoint(item)
@@ -513,6 +516,118 @@ class UniformContextSamplerDataset(Dataset):
         datapoint["query"]["scene_idxs"] = query_scene_idxs_this_datapoint
         if self._eval_mode:
             datapoint["query"]["scene_srAzs"] = query_scene_srAz_this_datapoint
+        return datapoint
+
+    def get_context(self, datapoint_scene, first_obs):
+        """
+        get datapoint given datapoint index (datapoint matters only for eval)
+        :param item_: datapoint index
+        :return: datapoint
+        """
+        item_ = self.arbitrary_rir_scene_names_from_disk.index(datapoint_scene)
+        assert item_ < len(self.arbitrary_rir_query_pose_subgraph_idxs_from_disk)
+        datapoint_subgraph_idx = int(self.arbitrary_rir_query_pose_subgraph_idxs_from_disk[item_])
+
+        assert datapoint_scene in self._arr_echo_poses_per_scene
+        assert datapoint_subgraph_idx is not None
+        assert datapoint_subgraph_idx in self._arr_echo_poses_per_scene[datapoint_scene]
+        self._arr_echo_poses_per_scene[datapoint_scene][datapoint_subgraph_idx] =\
+            np.array(self._arr_echo_poses_per_scene[datapoint_scene][datapoint_subgraph_idx])
+        num_scene_context_poses = len(self._arr_echo_poses_per_scene[datapoint_scene][datapoint_subgraph_idx])
+
+        max_context_length_this_datapoint = 20
+        num_context_poses = max_context_length_this_datapoint
+        if num_context_poses > num_scene_context_poses:
+            num_context_poses = num_scene_context_poses
+
+        assert item_ < len(self.context_pose_idxs_from_disk)
+        assert max_context_length_this_datapoint <= len(self.context_pose_idxs_from_disk[item_]),\
+            print(max_context_length_this_datapoint, len(self.context_pose_idxs_from_disk[item_]))
+        context_pose_idxs = self.context_pose_idxs_from_disk[item_][:max_context_length_this_datapoint]
+        assert isinstance(context_pose_idxs, list)
+
+        context_poses = self._arr_echo_poses_per_scene[datapoint_scene][datapoint_subgraph_idx][context_pose_idxs, :].tolist()
+
+        datapoint = {}
+
+        view_sensor_height = None
+        view_sensor_width = None
+        view_sensor_nChannels = None
+        assert len(self.config.SENSORS) == 2
+        if self.config.SENSORS in [["RGB_SENSOR", "DEPTH_SENSOR"], ["DEPTH_SENSOR", "RGB_SENSOR"]]:
+            assert self.sim_cfg.RGB_SENSOR.HEIGHT == self.sim_cfg.DEPTH_SENSOR.HEIGHT
+            view_sensor_height = self.sim_cfg.RGB_SENSOR.HEIGHT
+
+            assert self.sim_cfg.RGB_SENSOR.WIDTH == self.sim_cfg.DEPTH_SENSOR.WIDTH
+            view_sensor_width = self.sim_cfg.RGB_SENSOR.WIDTH
+
+            view_sensor_nChannels = 4
+        else:
+            raise ValueError
+
+        context_views_this_datapoint = np.zeros((self.max_context_length,
+                                                view_sensor_height,
+                                                view_sensor_width,
+                                                view_sensor_nChannels)).astype("float32")
+
+        assert self._pose_feat_shape[0] == 5
+        context_poses_this_datapoint = np.zeros((self.max_context_length, 5)).astype("float32")
+
+        context_mask_this_datapoint = np.zeros(self.max_context_length).astype("uint8")
+
+        assert self._echo_feat_shape is not None
+        context_echoes_mag_this_datapoint = np.zeros((self.max_context_length,
+                                                      self._echo_feat_shape[0],
+                                                      self._echo_feat_shape[1],
+                                                      self._echo_feat_shape[2])).astype("float32")
+
+        assert len(context_poses) >= 1, "can't compute relative query pose if there isn't at least 1 valid entry in context"
+        ref_pose_for_computing_rel_pose = first_obs
+
+        for context_idx in range(self.max_context_length):
+            if context_idx < len(context_poses):
+                curr_context_entry_rgb =\
+                    self.all_scenes_observations[datapoint_scene][(context_poses[context_idx][0],
+                                                                   self._compute_rotation_from_azimuth(context_poses[context_idx][1]))]["rgb"][:, :, :3]
+                curr_context_entry_depth = self.all_scenes_observations[datapoint_scene][(context_poses[context_idx][0],
+                                                                                          self._compute_rotation_from_azimuth(context_poses[context_idx][1]))]["depth"]
+                #curr_context_entry_depth = np.expand_dims(curr_context_entry_depth, axis=-1)
+                if self.sim_cfg.DEPTH_SENSOR.NORMALIZE_DEPTH:
+                    curr_context_entry_depth = self._normalize_depth(curr_context_entry_depth)
+
+                curr_context_entry_view = np.concatenate((curr_context_entry_rgb, curr_context_entry_depth), axis=-1)
+
+                context_views_this_datapoint[context_idx] = curr_context_entry_view
+
+                curr_context_entry_echo_mag, curr_context_entry_echo_phase =\
+                    self._compute_spect(scene=datapoint_scene,
+                                        azimuth=int(context_poses[context_idx][1]),
+                                        receiver_node=int(context_poses[context_idx][0]),
+                                        source_node=None,
+                                        is_context=True,
+                                        )
+                context_echoes_mag_this_datapoint[context_idx] = curr_context_entry_echo_mag
+
+                assert len(context_poses[context_idx]) == 2
+                current_context_pose = [context_poses[context_idx][0],
+                                        context_poses[context_idx][0],
+                                        context_poses[context_idx][1]]
+                curr_context_entry_pose =\
+                    np.array(self._compute_relative_pose(current_pose=current_context_pose,
+                                                         ref_pose=ref_pose_for_computing_rel_pose,
+                                                         scene_graph=self._all_scenes_graphs_this_split[datapoint_scene],
+                                                         )).astype("float32")
+                context_poses_this_datapoint[context_idx] = curr_context_entry_pose
+
+                if not self._is_max_context_length_zero:
+                    context_mask_this_datapoint[context_idx] = 1
+
+        datapoint = {}
+        datapoint["context_views"] = torch.from_numpy(context_views_this_datapoint)
+        datapoint["context_echoes"] = torch.from_numpy(context_echoes_mag_this_datapoint)
+        datapoint["context_poses"] = torch.from_numpy(context_poses_this_datapoint)
+        datapoint["context_mask"] = torch.from_numpy(context_mask_this_datapoint)
+
         return datapoint
 
     def _normalize_depth(self, depth):

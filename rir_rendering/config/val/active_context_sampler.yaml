@@ -13,7 +13,7 @@ SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"]
 #CHECKPOINT_FOLDER: "data/new_checkpoints"
 
 EVAL:
-  SPLIT: "val_telephone"
+  SPLIT: "val_gxdoqLR6rwA"
   USE_CKPT_CONFIG: True
 
 NUM_PROCESSES: 10
@@ -32,7 +32,7 @@ UniformContextSampler:
   log_gt_eps: 1.0e-8
 
   EvalMetrics:
-    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "rel_diff_rt_startFrom60dB", "rel_diff_edt", "diff_drr_3ms", "rel_diff_drr_3ms", "diff_ratio_lrEnergy"] #
+    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "diff_drr_3ms"] #"rel_diff_rt_startFrom60dB", , "rel_diff_drr_3ms", "diff_ratio_lrEnergy","rel_diff_edt", 
 
   encode_each_modality_as_independent_context_entry: True
   append_modality_type_tag_encoding_to_each_modality_encoding: True

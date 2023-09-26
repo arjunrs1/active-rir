@@ -51,10 +51,10 @@ from ss_baselines.savi.ddppo.algo.ddp_utils import (
     requeue_job,
     save_interrupted_state,
 )
-from rir_rendering.active_context_sampler.ddppo import DDPPO
-from rir_rendering.active_context_sampler.ppo_trainer import ActiveRIRTrainer, load_rir_predictor
-from rir_rendering.active_context_sampler.policy import ActiveRIRPolicy
-from rir_rendering.active_context_sampler.ppo import PPO
+from rir_rendering.active_context_sampler.ddppo.ddppo import DDPPO
+from rir_rendering.active_context_sampler.ddppo.ppo_trainer import ActiveRIRTrainer
+from rir_rendering.active_context_sampler.ppo.ppo_trainer import load_rir_predictor
+from rir_rendering.active_context_sampler.ppo.policy import ActiveRIRPolicy
 from rir_rendering.uniform_context_sampler.policy import UniformContextSamplerPolicy
 from rir_rendering.common.eval_metrics import compute_spect_metrics
 
@@ -80,13 +80,17 @@ class DDPPOTrainer(ActiveRIRTrainer):
         """
         logger.add_filehandler(self.config.LOG_FILE)
 
+        # Setup heuristic stop criterion if applicable
+        action_space = self.envs.action_spaces[0]
+        self.action_space = action_space
+
         ppo_cfg = cfg.RL.PPO
 
         if observation_space is None:
             observation_space = self.envs.observation_spaces[0]
         self.actor_critic = ActiveRIRPolicy(
             cfg,
-            action_space=self.envs.action_spaces[0],
+            action_space=self.action_space,
             hidden_size=ppo_cfg.hidden_size
         )
         self.actor_critic.to(self.device)
@@ -105,100 +109,9 @@ class DDPPOTrainer(ActiveRIRTrainer):
             lr=ppo_cfg.lr,
             eps=ppo_cfg.eps,
             max_grad_norm=ppo_cfg.max_grad_norm,
+            use_normalized_advantage=True
         )
 
-    def _collect_rollout_step(
-        self, rollouts, current_episode_reward, current_episode_step, episode_rewards,
-            episode_counts, episode_steps, episode_rir_errors
-    ):
-        pth_time = 0.0
-        env_time = 0.0
-
-        t_sample_action = time.time()
-        # sample actions
-        with torch.no_grad():
-            step_observation = {
-                k: v[rollouts.step] for k, v in rollouts.observations.items()
-            }
-
-            (
-                values,
-                actions,
-                actions_log_probs,
-                recurrent_hidden_states,
-                prev_obs_hidden_states,
-            ) = self.actor_critic.act(
-                step_observation,
-                rollouts.recurrent_hidden_states[rollouts.step],
-                rollouts.prev_actions[rollouts.step],
-                rollouts.masks[rollouts.step],
-                rollouts.prev_obs_hidden_states[rollouts.step],
-            )
-
-        pth_time += time.time() - t_sample_action
-
-        t_step_env = time.time()
-
-        outputs = self.envs.step([a[0].item() for a in actions])
-        observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
-
-        episode_rir_error = [0] * len(dones)
-        for i, done in enumerate(dones):
-            if done:
-                observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
-                rewards[i] = 0.0
-                episode_rir_error[i] = np.array(self._get_rir_error(rollouts.observations, current_episode_step[i]+1, i)[0]['stft_l1_distance']).mean()
-            else:
-                observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
-                rewards[i] = self.get_reward(rollouts.observations, current_episode_step[i], i, curr_obs=observations[i], use_sparse_reward=(rollouts.step==18))
-
-        logging.debug('Reward: {}'.format(rewards[0]))
-
-        env_time += time.time() - t_step_env
-
-        t_update_stats = time.time()
-        rewards = torch.tensor(rewards, dtype=torch.float)
-        rewards = rewards.unsqueeze(1).to(device=self.device)
-        episode_rir_error = torch.tensor(episode_rir_error, dtype=torch.float)
-        episode_rir_error = episode_rir_error.unsqueeze(1).to(device=self.device)
-        batch = batch_obs(observations)
-
-        masks = torch.tensor(
-            [[0.0] if done else [1.0] for done in dones], dtype=torch.float
-        ).to(device=self.device)
-
-        current_episode_reward += rewards
-        current_episode_step += 1
-        # current_episode_reward is accumulating rewards across multiple updates,
-        # as long as the current episode is not finished
-        # the current episode reward is added to the episode rewards only if the current episode is done
-        # the episode count will also increase by 1
-        episode_rewards += (1 - masks) * current_episode_reward
-        episode_steps += (1 - masks) * current_episode_step
-        episode_counts += 1 - masks
-        episode_rir_errors += (1 - masks) * episode_rir_error
-        current_episode_reward *= masks
-        current_episode_step *= masks
-
-        rollouts.insert(
-            batch,
-            recurrent_hidden_states,
-            actions,
-            actions_log_probs,
-            values,
-            rewards,
-            masks,
-            prev_obs_hidden_states,
-        )
-
-        pth_time += time.time() - t_update_stats
-
-        #clear CUDA memory
-        batch = None
-        observations = None
-        episode_rir_error = None
-
-        return pth_time, env_time, self.envs.num_envs
 
     def train(self) -> None:
         r"""Main method for training DD-PPO.
@@ -276,8 +189,9 @@ class DDPPOTrainer(ActiveRIRTrainer):
             ppo_cfg.num_steps,
             self.envs.num_envs,
             self.envs.observation_spaces[0],
-            self.envs.action_spaces[0],
+            self.action_space,
             ppo_cfg.hidden_size,
+            num_recurrent_layers=self.actor_critic.net.num_recurrent_layers,
         )
         rollouts.to(self.device)
 

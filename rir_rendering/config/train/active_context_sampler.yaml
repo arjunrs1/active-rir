@@ -77,16 +77,16 @@ UniformContextSampler:
 RL:
   PPO:
     # ppo params
-    clip_param: 0.2
+    clip_param: 0.1
     ppo_epoch: 4
     num_mini_batch: 1
     value_loss_coef: 0.5
-    entropy_coef: 0.01
+    entropy_coef: 0.20
     lr: 2.5e-4
     eps: 1e-5
     max_grad_norm: 0.5
     # decide the length of history that ppo encodes
-    num_steps: 200
+    num_steps: 20
     hidden_size: 512
     use_gae: True
     gamma: 0.99

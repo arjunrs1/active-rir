@@ -481,6 +481,7 @@ class UniformContextSamplerTrainer(BaseRLTrainer):
         all_metric_types = uniform_context_sampler_cfg.EvalMetrics.types
 
         for split in dataloaders.keys():
+            split_scene_names = []
             audio_waveforms_dump_dir = None
             if uniform_context_sampler_cfg.dump_audio_waveforms:
                 audio_waveforms_dump_dir = os.path.join(config.MODEL_DIR, "audio_waveforms", split)
@@ -569,6 +570,7 @@ class UniformContextSamplerTrainer(BaseRLTrainer):
                     use_rand_phase=uniform_context_sampler_cfg.use_rand_phase,
                     use_rand_phase_for_gt=uniform_context_sampler_cfg.use_rand_phase_for_gt,
                 )
+                split_scene_names += eval_scenes_this_batch
 
                 for metric_type in all_metric_types:
                     if metric_type not in eval_metrics:
@@ -595,5 +597,8 @@ class UniformContextSamplerTrainer(BaseRLTrainer):
 
             with open(os.path.join(config.MODEL_DIR, f"{split}_{dataset_sizes[split]}datapoints_metrics.pkl"), "wb") as fo:
                 pickle.dump(eval_metrics, fo, protocol=pickle.HIGHEST_PROTOCOL)
+
+            with open(os.path.join(config.MODEL_DIR, f"{split}_{dataset_sizes[split]}datapoints_sceneNames.pkl"), "wb") as fo:
+                pickle.dump(split_scene_names, fo, protocol=pickle.HIGHEST_PROTOCOL)
 
             datasets[split].dump_eval_pkls()

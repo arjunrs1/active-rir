@@ -10,7 +10,7 @@ import torch
 import torch.distributed as distrib
 
 from ss_baselines.common.rollout_storage import RolloutStorage
-from rir_rendering.active_context_sampler.ppo import PPO
+from rir_rendering.active_context_sampler.ppo.ppo import PPO
 
 EPS_PPO = 1e-5
 
@@ -94,3 +94,4 @@ class DecentralizedDistributedMixin:
 
 class DDPPO(DecentralizedDistributedMixin, PPO):
     pass
+    

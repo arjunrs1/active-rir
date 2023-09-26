@@ -38,12 +38,19 @@ from ss_baselines.common.utils import (
     plot_top_down_map,
     resize_observation
 )
-from rir_rendering.active_context_sampler.policy import ActiveRIRPolicy
-from rir_rendering.active_context_sampler.ppo import PPO
+from rir_rendering.active_context_sampler.ppo.policy import ActiveRIRPolicy
+from rir_rendering.active_context_sampler.ppo.ppo import PPO
 from rir_rendering.uniform_context_sampler.policy import UniformContextSamplerPolicy
 from rir_rendering.common.eval_metrics import compute_spect_metrics
 
-@baseline_registry.register_trainer(name="ActiveRIRTrainer")
+class DataParallelPassthrough(torch.nn.DataParallel):
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
+
+@baseline_registry.register_trainer(name="active_rir_ppo")
 class ActiveRIRTrainer(BaseRLTrainer):
     r"""Trainer class for PPO algorithm
     Paper: https://arxiv.org/abs/1707.06347.
@@ -55,7 +62,9 @@ class ActiveRIRTrainer(BaseRLTrainer):
         self.actor_critic = None
         self.agent = None
         self.envs = None
-        self.previous_measurement_error = None
+
+        self._static_smt_encoder = False
+        self._encoder = None
 
     def get_reward_placeholder(self, prev_observations, env_index, curr_obs=None, use_sparse_reward=False):
         return 0
@@ -231,6 +240,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             lr=ppo_cfg.lr,
             eps=ppo_cfg.eps,
             max_grad_norm=ppo_cfg.max_grad_norm,
+            use_normalized_advantage=True
         )
 
     def save_checkpoint(self, file_name: str) -> None:
@@ -318,14 +328,14 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         
         t_update_stats = time.time()
-        rewards = torch.tensor(rewards, dtype=torch.float)
+        rewards = torch.tensor(rewards, dtype=torch.float, device=current_episode_reward.device)
         rewards = rewards.unsqueeze(1)
-        episode_rir_error = torch.tensor(episode_rir_error, dtype=torch.float)
+        episode_rir_error = torch.tensor(episode_rir_error, dtype=torch.float, device=current_episode_reward.device)
         episode_rir_error = episode_rir_error.unsqueeze(1)
-        batch = batch_obs(observations)
+        batch = batch_obs(observations, device=self.device)
 
         masks = torch.tensor(
-            [[0.0] if done else [1.0] for done in dones], dtype=torch.float
+            [[0.0] if done else [1.0] for done in dones], dtype=torch.float, device=current_episode_reward.device
         )
 
         current_episode_reward += rewards
@@ -347,17 +357,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
             actions,
             actions_log_probs,
             values,
-            rewards,
-            masks,
+            rewards.to(device=self.device),
+            masks.to(device=self.device),
             prev_obs_hidden_states,
         )
 
         pth_time += time.time() - t_update_stats
-
-        #clear CUDA memory
-        batch = None
-        observations = None
-        episode_rir_error = None
 
         return pth_time, env_time, self.envs.num_envs
 
@@ -367,6 +372,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             last_observation = {
                 k: v[-1] for k, v in rollouts.observations.items()
             }
+            #TO DO: check that rollouts.step == last index
             next_value = self.actor_critic.get_value(
                 last_observation,
                 rollouts.recurrent_hidden_states[-1],
@@ -402,7 +408,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         torch.manual_seed(self.config.SEED)
 
         self.envs = construct_envs(
-            self.config, get_env_class(self.config.ENV_NAME)
+            self.config, get_env_class(self.config.ENV_NAME), workers_ignore_signals=True
         )
 
     
@@ -429,6 +435,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             self.envs.observation_spaces[0],
             self.envs.action_spaces[0],
             ppo_cfg.hidden_size,
+            num_recurrent_layers=self.actor_critic.net.num_recurrent_layers,
         )
         rollouts.to(self.device)
 
@@ -494,6 +501,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     )
 
                 #collect trajectories
+                self.agent.eval()
                 for step in tqdm(range(ppo_cfg.num_steps)):
                     delta_pth_time, delta_env_time, delta_steps = self._collect_rollout_step(
                         rollouts,
@@ -508,6 +516,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     env_time += delta_env_time
                     count_steps += delta_steps
 
+                self.agent.train()
                 delta_pth_time, value_loss, action_loss, dist_entropy = self._update_agent(
                     ppo_cfg, rollouts
                 )
@@ -518,7 +527,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 window_episode_counts.append(episode_counts.clone())
                 window_episode_rir_error.append(episode_rir_errors.clone())
 
-                losses = [value_loss, action_loss, dist_entropy]
+                #losses = [value_loss, action_loss, dist_entropy]
                 stats = zip(
                     ["count", "reward", "step", "rir_error"],
                     [window_episode_counts, window_episode_reward, window_episode_step, window_episode_rir_error],
@@ -535,14 +544,13 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
                 # this reward is averaged over all the episodes happened during window_size updates
                 # approximately number of steps is window_size * num_steps
-                if update % 10 == 0:
-                    writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
-                    writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
-                    writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
-                    writer.add_scalar('Policy/Value_Loss', value_loss, count_steps)
-                    writer.add_scalar('Policy/Action_Loss', action_loss, count_steps)
-                    writer.add_scalar('Policy/Entropy', dist_entropy, count_steps)
-                    writer.add_scalar('Policy/Learning_Rate', lr_scheduler.get_lr()[0], count_steps)
+                writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
+                writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
+                writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
+                writer.add_scalar('Policy/Value_Loss', value_loss, count_steps)
+                writer.add_scalar('Policy/Action_Loss', action_loss, count_steps)
+                writer.add_scalar('Policy/Entropy', dist_entropy, count_steps)
+                writer.add_scalar('Policy/Learning_Rate', lr_scheduler.get_lr()[0], count_steps)
 
                 # log stats
                 if update > 0 and update % self.config.LOG_INTERVAL == 0:
@@ -592,347 +600,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
             self.envs.close()
 
-    def _eval_checkpoint(
-        self,
-        checkpoint_path: str,
-        writer: TensorboardWriter,
-        checkpoint_index: int = 0
-    ) -> Dict:
-        r"""Evaluates a single checkpoint.
-
-        Args:
-            checkpoint_path: path of checkpoint
-            writer: tensorboard writer object for logging to tensorboard
-            checkpoint_index: index of cur checkpoint for logging
-
-        Returns:
-            None
-        """
-        random.seed(self.config.SEED)
-        np.random.seed(self.config.SEED)
-        torch.manual_seed(self.config.SEED)
-            
-        # Map location CPU is almost always better than mapping to a CUDA device.
-        ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
-
-        self.rir_predictor = load_rir_predictor(self.config.RL.PRETRAINED_RIR_PREDICTOR_PATH, self.device)
-
-        if self.config.EVAL.USE_CKPT_CONFIG:
-            config = self._setup_eval_config(ckpt_dict["config"])
-        else:
-            config = self.config.clone()
-
-        ppo_cfg = config.RL.PPO
-
-        config.defrost()
-        config.TASK_CONFIG.DATASET.SPLIT = config.EVAL.SPLIT
-        if self.config.DISPLAY_RESOLUTION != config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH:
-            model_resolution = config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH
-            config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.WIDTH = config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.HEIGHT = \
-                config.TASK_CONFIG.SIMULATOR.RGB_SENSOR.WIDTH = config.TASK_CONFIG.SIMULATOR.DEPTH_SENSOR.HEIGHT = \
-                self.config.DISPLAY_RESOLUTION
-        else:
-            model_resolution = self.config.DISPLAY_RESOLUTION
-        config.freeze()
-
-        if len(self.config.VIDEO_OPTION) > 0:
-            config.defrost()
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append("COLLISIONS")
-            config.freeze()
-        elif "top_down_map" in self.config.VISUALIZATION_OPTION:
-            config.defrost()
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
-            config.freeze()
-        if "pred_rir_spec" in self.config.VISUALIZATION_OPTION:
-            config.defrost()
-            config.TASK_CONFIG.TASK.MEASUREMENTS.append("PRED_RIR_SPEC")
-            config.freeze()
-
-        logger.info(f"env config: {config}")
-        self.envs = construct_envs(
-            config, get_env_class(config.ENV_NAME)
-        )
-        if self.config.DISPLAY_RESOLUTION != model_resolution:
-            observation_space = self.envs.observation_spaces[0]
-            observation_space.spaces['depth'] = spaces.Box(low=0, high=1, shape=(model_resolution,
-                                                           model_resolution, 1), dtype=np.uint8)
-            observation_space.spaces['rgb'] = spaces.Box(low=0, high=1, shape=(model_resolution,
-                                                         model_resolution, 3), dtype=np.uint8)
-        else:
-            observation_space = self.envs.observation_spaces[0]
-        self._setup_actor_critic_agent(config, observation_space)
-
-        self.agent.load_state_dict(ckpt_dict["state_dict"])
-        self.actor_critic = self.agent.actor_critic
-
-        self.metric_uuids = []
-        # get name of performance metric, e.g. "spl"
-        for metric_name in self.config.TASK_CONFIG.TASK.MEASUREMENTS:
-            metric_cfg = getattr(self.config.TASK_CONFIG.TASK, metric_name)
-            measure_type = baseline_registry.get_measure(metric_cfg.TYPE)
-            assert measure_type is not None, "invalid measurement type {}".format(
-                metric_cfg.TYPE
-            )
-            self.metric_uuids.append(measure_type(sim=None, task=None, config=None)._get_uuid())
-
-        self.query_positions = [
-            [] for _ in range(self.envs.num_envs)
-        ]
-
-        self.novelty_count = [
-            dict() for _ in range(self.envs.num_envs)
-        ]
-
-        self.context_observations = [
-            [] for _ in range(self.envs.num_envs)
-        ]
-
-        self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
-        self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
-        self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
-
-        observations_and_queries = self.envs.reset()
-        observations = [self.initialize_queries_gt_rirs_and_observations(obs, i) for i, obs in enumerate(observations_and_queries)]
-        if self.config.DISPLAY_RESOLUTION != model_resolution:
-            resize_observation(observations, model_resolution)
-
-        batch = batch_obs(observations, self.device)
-
-        current_episode_step = torch.zeros(
-            self.envs.num_envs, 1,
-        )
-        current_episode_reward = torch.zeros(
-            self.envs.num_envs, 1,
-        )
-
-        test_recurrent_hidden_states = torch.zeros(
-            self.actor_critic.net.num_recurrent_layers,
-            self.config.NUM_PROCESSES,
-            ppo_cfg.hidden_size,
-            device=self.device,
-        )
-        prev_actions = torch.zeros(
-            self.config.NUM_PROCESSES, 1, device=self.device, dtype=torch.long
-        )
-        not_done_masks = torch.zeros(
-            self.config.NUM_PROCESSES, 1, device=self.device
-        )
-
-        prev_obs_hidden_states = torch.zeros(
-            self.actor_critic.net.num_recurrent_layers,
-            self.config.NUM_PROCESSES,
-            ppo_cfg.hidden_size,
-            device=self.device,
-        )
-
-        stats_episodes = dict()  # dict of dicts that stores stats per episode
-
-        rgb_frames = [
-            [] for _ in range(self.config.NUM_PROCESSES)
-        ]  # type: List[List[np.ndarray]]
-        audios = [
-            [] for _ in range(self.config.NUM_PROCESSES)
-        ]
-        if len(self.config.VIDEO_OPTION) > 0:
-            os.makedirs(self.config.VIDEO_DIR, exist_ok=True)
-
-        t = tqdm(total=self.config.TEST_EPISODE_COUNT)
-        while (
-            len(stats_episodes) < self.config.TEST_EPISODE_COUNT
-            and self.envs.num_envs > 0
-        ):
-            current_episodes = self.envs.current_episodes()
-
-            with torch.no_grad():
-                _, actions, _, test_recurrent_hidden_states, prev_obs_hidden_states = self.actor_critic.act(
-                    batch,
-                    test_recurrent_hidden_states,
-                    prev_actions,
-                    not_done_masks,
-                    prev_obs_hidden_states,
-                    deterministic=False
-                )
-
-                prev_actions.copy_(actions)
-
-            outputs = self.envs.step([a[0].item() for a in actions])
-
-            observations, rewards, dones, infos = [
-                list(x) for x in zip(*outputs)
-            ]
-
-            with torch.no_grad():
-                episode_rir_error = [0] * len(dones)
-                for i, done in enumerate(dones):
-                    if done:
-                        episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], 20, i)[0]['stft_l1_distance']).mean()
-                        observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i, reset_context=False)
-                        rewards[i] = 0.0
-                    else:
-                        observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
-                        if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
-                            context_obs = {k: v[i].cpu() for k, v in batch.items()}
-                            self.context_observations[i].append(context_obs)
-                        rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(current_episode_step[i].item()==self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS-2))
-
-            current_episode_step += 1
-            for i in range(self.envs.num_envs):
-                if len(self.config.VIDEO_OPTION) > 0:
-                    if config.TASK_CONFIG.SIMULATOR.CONTINUOUS_VIEW_CHANGE and 'intermediate' in observations[i]:
-                        for observation in observations[i]['intermediate']:
-                            frame = observations_to_image(observation, infos[i])
-                            rgb_frames[i].append(frame)
-                        del observations[i]['intermediate']
-
-                    if "rgb" not in observations[i]:
-                        observations[i]["rgb"] = np.zeros((self.config.DISPLAY_RESOLUTION,
-                                                           self.config.DISPLAY_RESOLUTION, 3))
-                    frame = observations_to_image(observations[i], infos[i])
-                    rgb_frames[i].append(frame)
-
-            if config.DISPLAY_RESOLUTION != model_resolution:
-                resize_observation(observations, model_resolution)
-            batch = batch_obs(observations, self.device)
-
-            not_done_masks = torch.tensor(
-                [[0.0] if done else [1.0] for done in dones],
-                dtype=torch.float,
-                device=self.device,
-            )
-
-            rewards = torch.tensor(
-                rewards, dtype=torch.float
-            ).unsqueeze(1)
-            current_episode_reward += rewards
-            next_episodes = self.envs.current_episodes()
-            envs_to_pause = []
-            for i in range(self.envs.num_envs):
-                # pause envs which runs out of episodes
-                if (
-                    next_episodes[i].scene_id,
-                    next_episodes[i].episode_id,
-                ) in stats_episodes:
-                    envs_to_pause.append(i)
-
-                # episode ended
-                if not_done_masks[i].item() == 0:
-                    episode_stats = dict()
-                    for metric_uuid in self.metric_uuids:
-                        episode_stats[metric_uuid] = infos[i][metric_uuid]
-                    episode_stats["reward"] = current_episode_reward[i].item()
-                    spect_metrics, gts, preds = self._get_rir_error(self.context_observations[i], self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS, i, return_all_metrics=True)
-                    for metric in spect_metrics:
-                        episode_stats[metric] = np.array(spect_metrics[metric]).mean()
-                    logging.debug(episode_stats)
-                    current_episode_reward[i] = 0
-                    current_episode_step[i] = 0
-                    self.reset_and_initialize_context(observations[i], env_index=i)
-                    # use scene_id + episode_id as unique id for storing stats
-                    stats_episodes[
-                        (
-                            current_episodes[i].scene_id,
-                            current_episodes[i].episode_id,
-                        )
-                    ] = episode_stats
-                    t.update()
-
-                    if len(self.config.VIDEO_OPTION) > 0:
-                        fps = int(1 / self.config.TASK_CONFIG.SIMULATOR.STEP_TIME)
-                        if 'sound' in current_episodes[i].info:
-                            sound = current_episodes[i].info['sound']
-                        else:
-                            sound = current_episodes[i].sound_id.split('/')[1][:-4]
-                        generate_video(
-                            video_option=self.config.VIDEO_OPTION,
-                            video_dir=self.config.VIDEO_DIR,
-                            images=rgb_frames[i][:-1],
-                            scene_name=current_episodes[i].scene_id.split('/')[3],
-                            sound=sound,
-                            sr=self.config.TASK_CONFIG.SIMULATOR.AUDIO.RIR_SAMPLING_RATE,
-                            episode_id=current_episodes[i].episode_id,
-                            checkpoint_idx=checkpoint_index,
-                            metric_name='no_metric',
-                            metric_value=5.0,
-                            tb_writer=writer,
-                            fps=fps
-                        )
-
-                        # observations has been reset but info has not
-                        # to be consistent, do not use the last frame
-                        rgb_frames[i] = []
-
-                    if "top_down_map" in self.config.VISUALIZATION_OPTION:
-                        top_down_map = plot_top_down_map(infos[i],
-                                                         dataset=self.config.TASK_CONFIG.SIMULATOR.SCENE_DATASET)
-                        scene = current_episodes[i].scene_id.split('/')[3]
-                        writer.add_image('{}_{}_{}/{}'.format(config.EVAL.SPLIT, scene, current_episodes[i].episode_id,
-                                                              config.BASE_TASK_CONFIG_PATH.split('/')[-1][:-5]),
-                                         top_down_map,
-                                         dataformats='WHC')
-                    if "pred_rir_spec" in self.config.VISUALIZATION_OPTION:
-                        #rir_plot = plot_rir_gts_and_preds(gts, preds)
-                        top_down_map = plot_top_down_map(infos[i],
-                                                         dataset=self.config.TASK_CONFIG.SIMULATOR.SCENE_DATASET)
-                        scene = current_episodes[i].scene_id.split('/')[3]
-                        writer.add_image('{}_{}_{}/{}'.format(config.EVAL.SPLIT, scene, current_episodes[i].episode_id,
-                                                              config.BASE_TASK_CONFIG_PATH.split('/')[-1][:-5]),
-                                         rir_plot,
-                                         dataformats='WHC')
-
-            (
-                self.envs,
-                test_recurrent_hidden_states,
-                not_done_masks,
-                current_episode_reward,
-                prev_actions,
-                batch,
-                rgb_frames,
-            ) = self._pause_envs(
-                envs_to_pause,
-                self.envs,
-                test_recurrent_hidden_states,
-                not_done_masks,
-                current_episode_reward,
-                prev_actions,
-                batch,
-                rgb_frames,
-            )
-
-        aggregated_stats = dict()
-        for stat_key in next(iter(stats_episodes.values())).keys():
-            aggregated_stats[stat_key] = sum(
-                [v[stat_key] for v in stats_episodes.values()]
-            )
-        num_episodes = len(stats_episodes)
-
-        stats_file = os.path.join(config.TENSORBOARD_DIR, '{}_stats_{}.json'.format(config.EVAL.SPLIT, config.SEED))
-        new_stats_episodes = {','.join(key): value for key, value in stats_episodes.items()}
-        with open(stats_file, 'w') as fo:
-            json.dump(new_stats_episodes, fo, indent=4)
-
-        episode_metrics_mean = {}
-        for metric in aggregated_stats.keys():
-            episode_metrics_mean[metric] = aggregated_stats[metric] / num_episodes
-
-        for metric in episode_metrics_mean:
-            logger.info(
-                f"Average episode {metric}: {episode_metrics_mean[metric]:.6f}"
-            )
-
-        if not config.EVAL.SPLIT.startswith('test'):
-            for metric in episode_metrics_mean:
-                writer.add_scalar(f"{config.EVAL.SPLIT}/{metric}", episode_metrics_mean[metric],
-                                  checkpoint_index)
-
-        self.envs.close()
-
-        result = {}
-        for metric in episode_metrics_mean:
-            result['episode_{}_mean'.format(metric)] = episode_metrics_mean[metric]
-
-        return result
-    
     def normalize_depth(self, depth):
         """
         normalize depth
@@ -946,11 +613,14 @@ class ActiveRIRTrainer(BaseRLTrainer):
         return depth
     
     def initialize_queries_gt_rirs_and_observations(self, initial_observations, i, reset_context=True):
-        observations, query_positions, gt_rirs_mags, gt_rirs_phases = initial_observations
+        observations, query_positions, gt_rirs_mags, gt_rirs_phases, ref_pose = initial_observations
         observations['depth'] = observations['depth'].squeeze(-1)
         self.query_positions[i] = list(query_positions)
         self.gt_rirs_mag[i] = torch.tensor(gt_rirs_mags)
         self.gt_rirs_phase[i] = torch.tensor(gt_rirs_phases)
+
+        if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
+            self.ref_pose = ref_pose
 
         if reset_context:
             self.reset_and_initialize_context(observations, i)
@@ -969,21 +639,4 @@ class ActiveRIRTrainer(BaseRLTrainer):
         initial_context['bin_spect_mag'] = torch.tensor(observations['bin_spect_mag'])
         initial_context['pose'] = torch.tensor(np.array(observations['pose']), dtype=torch.float32)
         self.context_observations[env_index].append(initial_context)
-
-
-
-def load_rir_predictor(rir_pred_ckpt_path: str, device, distributed=False):
-    rir_pred_ckpt = torch.load(rir_pred_ckpt_path, map_location="cpu")
-    torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(rir_pred_ckpt['state_dict'], "actor_critic.")
-    rir_predictor = UniformContextSamplerPolicy(rir_pred_ckpt['config'])
-    rir_predictor.to(device)
-    if distributed:
-        rir_predictor = torch.nn.parallel.DistributedDataParallel(rir_predictor, device_ids=[device],
-                                            output_device=device)
-    else:
-        rir_predictor = torch.nn.DataParallel(rir_predictor, device_ids=list(range(torch.cuda.device_count())),
-                                            output_device=device)
-    rir_predictor.load_state_dict(rir_pred_ckpt['state_dict'])
-    rir_predictor.eval()
-
-    return rir_predictor
+    

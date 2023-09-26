@@ -204,10 +204,11 @@ class HabitatSimAudioEnabledTrain(HabitatSim):
                                                        scene_dataset=self.temp_scene_dataset)
             for node in self.graph.nodes():
                 self._position_to_index_mapping[self.position_encoding(self.graph.nodes()[node]['point'])] = node
+        self._episode_step_count = 0
 
         # set agent positions
         self._receiver_position_index = self._position_to_index(self.config.AGENT_0.START_POSITION)
-
+        self._source_position_index = self._position_to_index(self.config.AGENT_0.START_POSITION)
         # the agent rotates about +Y starting from -Z counterclockwise,
         # so rotation angle 90 means the agent rotate about +Y 90 degrees
         self._rotation_angle = int(np.around(np.rad2deg(quat_to_angle_axis(quat_from_coeffs(
@@ -238,7 +239,10 @@ class HabitatSimAudioEnabledTrain(HabitatSim):
         if joint_index in self._frame_cache:
             return self._frame_cache[joint_index]
         else:
+            assert not self.config.USE_RENDERED_OBSERVATIONS
             sim_obs = self._sim.get_sensor_observations()
+            for sensor in sim_obs:
+                sim_obs[sensor] = sim_obs[sensor]
             self._frame_cache[joint_index] = sim_obs
             return sim_obs
 
@@ -258,8 +262,8 @@ class HabitatSimAudioEnabledTrain(HabitatSim):
             self._sim.set_sensor_observations(sim_obs)
 
         self._is_episode_active = True
-        self._previous_step_collided = False
         self._prev_sim_obs = sim_obs
+        self._previous_step_collided = False
         # Encapsule data under Observations class
         observations = self._sensor_suite.get_observations(sim_obs)
 
@@ -487,6 +491,10 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         assert self.gt_rirs_mags is not None
         assert self.gt_rirs_phases is not None
         return self.query_poses, np.array(self.gt_rirs_mags), np.array(self.gt_rirs_phases)
+    
+    def convert_external_pose_to_relative(self, external_pose):
+        assert self.reference_pose is not None
+        return np.array(self.compute_relative_pose(current_pose=external_pose, ref_pose=self.reference_pose)).astype("float32") 
 
     def step(self, action, only_allowed=True):
         """

@@ -145,20 +145,24 @@ class ExplorationDataset(Dataset):
 
     def filter_by_ids(self, scene_ids):
         episodes_to_keep = list()
+        
         for episode in self.episodes:
             for scene_id in scene_ids:
                 scene, ep_id = scene_id.split(',')
                 if scene in episode.scene_id and ep_id == episode.episode_id:
                     episodes_to_keep.append(episode)
+
         self.episodes = episodes_to_keep
 
     # filter by scenes for data collection
     def filter_by_scenes(self, scene):
         episodes_to_keep = list()
+
         for episode in self.episodes:
             episode_scene = episode.scene_id.split("/")[3]
             if scene == episode_scene:
                 episodes_to_keep.append(episode)
+
         self.episodes = episodes_to_keep
 
     def from_json(
