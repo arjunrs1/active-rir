@@ -121,7 +121,7 @@ def measure_drr_energy_ratio(y, cutoff_time=0.003, fs=44100):
     y = np.trim_zeros(y, trim='fb')
 
     # everything up to the given idx is summed up and treated as direct sound energy
-    y = np.power(y, 2)
+    y = np.square(y)
     direct = sum(y[:direct_sound_idx + 1])
     reverberant = sum(y[direct_sound_idx + 1:])
     if direct == 0 or reverberant == 0:
@@ -134,7 +134,7 @@ def measure_drr_energy_ratio(y, cutoff_time=0.003, fs=44100):
 
 
 def calculate_drr_diff(gt, est, cutoff_time=0.003, fs=44100, compute_relative_diff=False, get_diff_val=False,
-                       get_gt_val=False, get_pred_val=False,):
+                       get_gt_val=False, get_pred_val=False, return_metric_and_relative=False):
     """
     get difference in DRR, DRR for gt or DRR for estimated IR
     :param gt: gt IR
@@ -150,6 +150,8 @@ def calculate_drr_diff(gt, est, cutoff_time=0.003, fs=44100, compute_relative_di
     drr_gt = measure_drr_energy_ratio(gt, cutoff_time=cutoff_time, fs=fs)
     drr_est = measure_drr_energy_ratio(est, cutoff_time=cutoff_time, fs=fs)
     diff = abs(drr_gt - drr_est)
+    if return_metric_and_relative:
+        return diff, abs(diff / drr_gt)
     if compute_relative_diff:
         diff = abs(diff / drr_gt)
 
@@ -171,11 +173,11 @@ def measure_lrEnergyRatio(y,):
     y = normalize(y)
     assert (len(y.shape) == 2) and (y.shape[0] == 2)
     y_l = np.trim_zeros(y[0], trim='fb')
-    power_l = np.power(y_l, 2)
+    power_l = np.square(y_l)
     energy_l = np.sum(power_l)
 
     y_r = np.trim_zeros(y[1], trim='fb')
-    power_r = np.power(y_r, 2)
+    power_r = np.square(y_r)
     energy_r = np.sum(power_r)
 
     lrEnergyRatio = 10 * np.log10((energy_l + 1.0e-8) / (energy_r + 1.0e-8))

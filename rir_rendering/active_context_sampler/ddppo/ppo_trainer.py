@@ -30,7 +30,7 @@ from rir_rendering.common.baseline_registry import baseline_registry
 from rir_rendering.common.env_utils import construct_envs
 from rir_rendering.common.environments import get_env_class
 from ss_baselines.common.rollout_storage import RolloutStorage
-from rir_rendering.common.tensorboard_utils import TensorboardWriter
+from ss_baselines.common.tensorboard_utils import TensorboardWriter
 from ss_baselines.common.utils import (
     batch_obs,
     generate_video,
@@ -40,6 +40,7 @@ from ss_baselines.common.utils import (
 )
 from rir_rendering.active_context_sampler.ppo.policy import ActiveRIRPolicy
 from rir_rendering.active_context_sampler.ppo.ppo import PPO
+from rir_rendering.active_context_sampler.ppo.ppo_trainer import load_rir_predictor
 from rir_rendering.uniform_context_sampler.policy import UniformContextSamplerPolicy
 from rir_rendering.common.eval_metrics import compute_spect_metrics
 
@@ -65,20 +66,17 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         self._static_smt_encoder = False
         self._encoder = None
-
-    def get_reward_placeholder(self, prev_observations, env_index, curr_obs=None, use_sparse_reward=False):
-        return 0
     
     def get_novelty_reward(self, env_index, curr_obs):
         if curr_obs is not None:
             pose = tuple(curr_obs['pose'])[:2]
             if pose in self.novelty_count[env_index].keys():
                 novelty_reward = 1/math.sqrt(self.novelty_count[env_index][pose])
-                self.novelty_count[env_index][pose] += 1
+                self.novelty_count[env_index][pose] += 1.0
                 return novelty_reward
             else:
-                self.novelty_count[env_index][pose] = 1
-                return 1
+                self.novelty_count[env_index][pose] = 2.0
+                return 1.0
         else:
             return 0
 
@@ -202,8 +200,11 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             gt_spect_mag=gt_rirs_mag,
                             gt_spect_phase=gt_rirs_phase,
                             pred_spect_mag=pred_spect_mag,
-                            mask=None,
                             eval_mode=True,
+                            fs=self.config.TASK_CONFIG.SIMULATOR.AUDIO.RIR_SAMPLING_RATE,
+                            hop_length=self.config.TASK_CONFIG.SIMULATOR.AUDIO.HOP_LENGTH,
+                            n_fft=self.config.TASK_CONFIG.SIMULATOR.AUDIO.N_FFT,
+                            win_length=self.config.TASK_CONFIG.SIMULATOR.AUDIO.WIN_LENGTH,
                         )
 
         return eval_metrics_batch, gt_rirs_mag, pred_spect_mag
@@ -240,7 +241,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
             lr=ppo_cfg.lr,
             eps=ppo_cfg.eps,
             max_grad_norm=ppo_cfg.max_grad_norm,
-            use_normalized_advantage=True
         )
 
     def save_checkpoint(self, file_name: str) -> None:
@@ -359,7 +359,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             values,
             rewards.to(device=self.device),
             masks.to(device=self.device),
-            prev_obs_hidden_states,
+            prev_obs_hidden_states=None,
         )
 
         pth_time += time.time() - t_update_stats
@@ -372,7 +372,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             last_observation = {
                 k: v[-1] for k, v in rollouts.observations.items()
             }
-            #TO DO: check that rollouts.step == last index
+
             next_value = self.actor_critic.get_value(
                 last_observation,
                 rollouts.recurrent_hidden_states[-1],
@@ -411,7 +411,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
             self.config, get_env_class(self.config.ENV_NAME), workers_ignore_signals=True
         )
 
-    
         ppo_cfg = self.config.RL.PPO
         self.device = (
             torch.device("cuda", self.config.TORCH_GPU_ID)
@@ -538,19 +537,21 @@ class ActiveRIRTrainer(BaseRLTrainer):
                         if len(v) > 1
                         else v[0].sum().item()
                     )
-                    for k, v in stats
+                    for k, v in stats if k != "rir_error"
                 }
+                deltas["rir_error"] = (window_episode_rir_error[0] - window_episode_rir_error[-1]).sum().item() if len(window_episode_rir_error) > 1 else window_episode_rir_error[0].sum().item()
                 deltas["count"] = max(deltas["count"], 1.0)
 
                 # this reward is averaged over all the episodes happened during window_size updates
                 # approximately number of steps is window_size * num_steps
-                writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
-                writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
-                writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
-                writer.add_scalar('Policy/Value_Loss', value_loss, count_steps)
-                writer.add_scalar('Policy/Action_Loss', action_loss, count_steps)
-                writer.add_scalar('Policy/Entropy', dist_entropy, count_steps)
-                writer.add_scalar('Policy/Learning_Rate', lr_scheduler.get_lr()[0], count_steps)
+                if update % 10 == 0:
+                    writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
+                    writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
+                    writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
+                    writer.add_scalar('Policy/Value_Loss', value_loss, count_steps)
+                    writer.add_scalar('Policy/Action_Loss', action_loss, count_steps)
+                    writer.add_scalar('Policy/Entropy', dist_entropy, count_steps)
+                    writer.add_scalar('Policy/Learning_Rate', lr_scheduler.get_lr()[0], count_steps)
 
                 # log stats
                 if update > 0 and update % self.config.LOG_INTERVAL == 0:
@@ -571,7 +572,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                         window_episode_reward[-1] - window_episode_reward[0]
                     ).sum()
                     window_rir_errors = (
-                        window_episode_rir_error[-1] - window_episode_rir_error[0]
+                        window_episode_rir_error[0] - window_episode_rir_error[-1]
                     ).sum()
                     window_counts = (
                         window_episode_counts[-1] - window_episode_counts[0]

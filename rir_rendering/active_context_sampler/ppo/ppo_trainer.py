@@ -31,7 +31,7 @@ from rir_rendering.common.baseline_registry import baseline_registry
 from rir_rendering.common.env_utils import construct_envs
 from rir_rendering.common.environments import get_env_class
 from ss_baselines.common.rollout_storage import RolloutStorage
-from rir_rendering.common.tensorboard_utils import TensorboardWriter
+from ss_baselines.common.tensorboard_utils import TensorboardWriter
 from ss_baselines.common.utils import (
     batch_obs,
     generate_video,
@@ -60,33 +60,29 @@ class ActiveRIRTrainer(BaseRLTrainer):
         self.agent = None
         self.envs = None
 
-    def get_reward_placeholder(self, prev_observations, env_index, curr_obs=None, use_sparse_reward=False):
-        return 0
-    
     def get_novelty_reward(self, env_index, curr_obs):
         if curr_obs is not None:
             pose = tuple(curr_obs['pose'])[:2]
             if pose in self.novelty_count[env_index].keys():
                 novelty_reward = 1/math.sqrt(self.novelty_count[env_index][pose])
-                self.novelty_count[env_index][pose] += 1
+                self.novelty_count[env_index][pose] += 1.0
                 return novelty_reward
             else:
-                self.novelty_count[env_index][pose] = 1
-                return 1
+                self.novelty_count[env_index][pose] = 2.0
+                return 1.0
         else:
             return 0
 
     def get_reward(self, prev_observations, env_index, curr_obs=None, use_sparse_reward=False):
         reward = 0
 
+        #reward for the actions taken after you already captured 20 contextual obs is irrelevant
         if len(prev_observations) == 20:
-            return reward #reward for the actions taken after you already captured 20 contextual obs is irrelevant
+            return reward 
 
         if self.config.RL.WITH_NOVELTY_REWARD:
             reward += self.get_novelty_reward(env_index, curr_obs)
-            #TO DO: add if statement for self.config.RL.USE_RIR_REWARD, if true then continue, else return current reward
         
-        #TO DO: add option for rir error (i.e. if self.config.RL.WITH_RIR_ERROR_REWARD:)
         if self.config.RL.WITH_RIR_REWARD:
             if len(prev_observations) != 1:
                 curr_rir_error = self._curr_rir_error[env_index]
@@ -196,8 +192,11 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             gt_spect_mag=gt_rirs_mag,
                             gt_spect_phase=gt_rirs_phase,
                             pred_spect_mag=pred_spect_mag,
-                            mask=None,
                             eval_mode=True,
+                            fs=self.config.TASK_CONFIG.SIMULATOR.AUDIO.RIR_SAMPLING_RATE,
+                            hop_length=self.config.TASK_CONFIG.SIMULATOR.AUDIO.HOP_LENGTH,
+                            n_fft=self.config.TASK_CONFIG.SIMULATOR.AUDIO.N_FFT,
+                            win_length=self.config.TASK_CONFIG.SIMULATOR.AUDIO.WIN_LENGTH,
                         )
 
         return eval_metrics_batch, gt_rirs_mag, pred_spect_mag
@@ -234,7 +233,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
             lr=ppo_cfg.lr,
             eps=ppo_cfg.eps,
             max_grad_norm=ppo_cfg.max_grad_norm,
-            use_normalized_advantage=True
         )
 
     def save_checkpoint(self, file_name: str) -> None:
@@ -353,7 +351,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             values,
             rewards,
             masks,
-            prev_obs_hidden_states,
+            prev_obs_hidden_states=None,
         )
 
         pth_time += time.time() - t_update_stats
@@ -405,7 +403,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
             self.config, get_env_class(self.config.ENV_NAME)
         )
 
-    
         ppo_cfg = self.config.RL.PPO
         self.device = (
             torch.device("cuda", self.config.TORCH_GPU_ID)
@@ -532,19 +529,21 @@ class ActiveRIRTrainer(BaseRLTrainer):
                         if len(v) > 1
                         else v[0].sum().item()
                     )
-                    for k, v in stats
+                    for k, v in stats if k != "rir_error"
                 }
+                deltas["rir_error"] = (window_episode_rir_error[0] - window_episode_rir_error[-1]).sum().item() if len(window_episode_rir_error) > 1 else window_episode_rir_error[0].sum().item()
                 deltas["count"] = max(deltas["count"], 1.0)
 
                 # this reward is averaged over all the episodes happened during window_size updates
                 # approximately number of steps is window_size * num_steps
-                writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
-                writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
-                writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
-                writer.add_scalar('Policy/Value_Loss', value_loss, count_steps)
-                writer.add_scalar('Policy/Action_Loss', action_loss, count_steps)
-                writer.add_scalar('Policy/Entropy', dist_entropy, count_steps)
-                writer.add_scalar('Policy/Learning_Rate', lr_scheduler.get_lr()[0], count_steps)
+                if update % 10 == 0:
+                    writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
+                    writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
+                    writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
+                    writer.add_scalar('Policy/Value_Loss', value_loss, count_steps)
+                    writer.add_scalar('Policy/Action_Loss', action_loss, count_steps)
+                    writer.add_scalar('Policy/Entropy', dist_entropy, count_steps)
+                    writer.add_scalar('Policy/Learning_Rate', lr_scheduler.get_lr()[0], count_steps)
 
                 # log stats
                 if update > 0 and update % self.config.LOG_INTERVAL == 0:
@@ -565,7 +564,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                         window_episode_reward[-1] - window_episode_reward[0]
                     ).sum()
                     window_rir_errors = (
-                        window_episode_rir_error[-1] - window_episode_rir_error[0]
+                        window_episode_rir_error[0] - window_episode_rir_error[-1]
                     ).sum()
                     window_counts = (
                         window_episode_counts[-1] - window_episode_counts[0]
@@ -731,7 +730,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
             self.intermediate_rir_errors = [[] for _ in range(self.config.TEST_EPISODE_COUNT)]
-            self.intermediate_rir_errors[0].append(self._get_rir_error(self.context_observations[0], 1, 0, return_all_metrics=True)[0])
+        if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
+            self.intermediate_fs_rir_errors = [[] for _ in range(self.config.TEST_EPISODE_COUNT)]
 
 
         stats_episodes = dict()  # dict of dicts that stores stats per episode
@@ -770,25 +770,20 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 list(x) for x in zip(*outputs)
             ]
 
-            with torch.no_grad():
-                episode_rir_error = [0] * len(dones)
-                for i, done in enumerate(dones):
-                    if done:
-                        episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], 20, i)[0]['stft_l1_distance']).mean()
-                        if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
-                            self.intermediate_rir_errors[len(stats_episodes)].append(self._get_rir_error(self.context_observations[i], 20, i, return_all_metrics=True)[0])
-                        if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
-                            self.pref_ref_pose = self.ref_pose
-                        observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i, reset_context=False)
-                        rewards[i] = 0.0
-                    else:
-                        observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
-                        if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
-                            context_obs = {k: v[i].cpu() for k, v in batch.items()}
-                            self.context_observations[i].append(context_obs)
-                            if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
-                                self.intermediate_rir_errors[len(stats_episodes)].append(self._get_rir_error(self.context_observations[i], len(self.context_observations[i]), i, return_all_metrics=True)[0])
-                        rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(current_episode_step[i].item()==self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS-2))
+            episode_rir_error = [0] * len(dones)
+            for i, done in enumerate(dones):
+                if done:
+                    episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], 20, i)[0]['stft_l1_distance']).mean()
+                    if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
+                        self.pref_ref_pose = self.ref_pose
+                    observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i, reset_context=False)
+                    rewards[i] = 0.0
+                else:
+                    observations[i]['depth'] = observations[i]['depth'].squeeze(-1) if len(observations[i]['depth']) == 4 else observations[i]['depth']
+                    if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
+                        context_obs = {k: v[i].cpu() for k, v in batch.items()}
+                        self.context_observations[i].append(context_obs)
+                    rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(current_episode_step[i].item()==self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS-2))
 
             current_episode_step += 1
             for i in range(self.envs.num_envs):
@@ -842,31 +837,26 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     current_episode_reward[i] = 0
                     current_episode_step[i] = 0
 
-                    if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
-                        obs = self.get_fs_rir_obs()
-                        agent_context_poses = [context['pose'] for context in self.context_observations[i]]
-                        distances = np.array([np.linalg.norm(obs['context_poses'][j] - agent_context_poses[j]) for j in range(20)])
-                        sorted_indices = np.argsort(distances, axis=0)
-                        for key in obs:
-                            obs[key] = obs[key][sorted_indices].unsqueeze(0)
-                        fs_mask = torch.zeros(obs['context_mask'].shape)
-                        self.fs_rir_intermediate_metrics = []
-                        query_poses = torch.unsqueeze(torch.tensor(self.query_positions[0]),0)
-                        query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
-                        obs['query_poses'] = query_poses
-                        obs['query_mask'] = query_mask
-                        for i in range(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH):
-                            fs_mask[0,i] = 1
-                            obs['context_mask'] = fs_mask
-                            spect_metrics, gts, preds = self._current_measurement_error(obs, 0, return_all_metrics=True)
-                            self.fs_rir_intermediate_metrics.append(spect_metrics)
-                        
-                        print("dumping intermediate fs rir errors...")
+                    if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS or self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
+                        if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
+                            print('computing episode {} intermediate ActiveRIR error metrics...'.format(len(stats_episodes)))
+                            for n in range(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH):
+                                self.intermediate_rir_errors[len(stats_episodes)].append(self._get_rir_error(self.context_observations[i], n+1, i, return_all_metrics=True)[0])
+                            print("done")
+                            
                         if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
-                            intermediate_fs_rir_file = os.path.join(config.TENSORBOARD_DIR, 'intermediate_errors_fs_rir_full.json')
-                            with open(intermediate_fs_rir_file, 'w') as json_file:
-                                json.dump(self.fs_rir_intermediate_metrics, json_file, indent=4)
-                        print("done")
+                            print("computing intermediate FS-RIR error metrics...")
+                            obs = self.get_fs_rir_obs()
+                            obs = {key: val.unsqueeze(0) for key, val in obs.items()}                    
+                            fs_mask = torch.zeros(obs['context_mask'].shape)
+                            query_poses = torch.unsqueeze(torch.tensor(self.query_positions[i]),0)
+                            query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
+                            obs['query_poses'] = query_poses
+                            obs['query_mask'] = query_mask
+                            for n in range(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH):
+                                fs_mask[0,n] = 1
+                                obs['context_mask'] = fs_mask
+                                self.intermediate_fs_rir_errors[len(stats_episodes)].append(self._current_measurement_error(obs, 0, return_all_metrics=True)[0])
 
                     self.reset_and_initialize_context(observations[i], env_index=i)
                     # use scene_id + episode_id as unique id for storing stats
@@ -948,9 +938,18 @@ class ActiveRIRTrainer(BaseRLTrainer):
         num_episodes = len(stats_episodes)
 
         if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
+            print("dumping intermediate ActiveRIR error metrics...")
             intermediate_file = os.path.join(config.TENSORBOARD_DIR, 'intermediate_errors_full.json')
             with open(intermediate_file, 'w') as json_file:
                 json.dump(self.intermediate_rir_errors, json_file, indent=4)
+            print("done")
+
+        if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
+            print("dumping intermediate FS-RIR error metrics...")
+            intermediate_fs_rir_file = os.path.join(config.TENSORBOARD_DIR, 'intermediate_errors_fs_rir_full.json')
+            with open(intermediate_fs_rir_file, 'w') as json_file:
+                json.dump(self.intermediate_fs_rir_errors, json_file, indent=4)
+            print("done")
 
         stats_file = os.path.join(config.TENSORBOARD_DIR, '{}_stats_{}.json'.format(config.EVAL.SPLIT, config.SEED))
         new_stats_episodes = {','.join(key): value for key, value in stats_episodes.items()}
@@ -993,7 +992,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
     
     def initialize_queries_gt_rirs_and_observations(self, initial_observations, i, reset_context=True):
         observations, query_positions, gt_rirs_mags, gt_rirs_phases, ref_pose = initial_observations
-        observations['depth'] = observations['depth'].squeeze(-1)
+        if len(observations['depth'].shape) == 4:
+            observations['depth'] = observations['depth'].squeeze(-1)
         self.query_positions[i] = list(query_positions)
         self.gt_rirs_mag[i] = torch.tensor(gt_rirs_mags)
         self.gt_rirs_phase[i] = torch.tensor(gt_rirs_phases)
@@ -1064,6 +1064,8 @@ def load_rir_predictor(rir_pred_ckpt_path: str, device, distributed=False):
         rir_predictor = torch.nn.DataParallel(rir_predictor, device_ids=list(range(torch.cuda.device_count())),
                                             output_device=device)
     rir_predictor.load_state_dict(rir_pred_ckpt['state_dict'])
+    for param in rir_predictor.parameters():
+        param.requires_grad = False
     rir_predictor.eval()
 
     return rir_predictor

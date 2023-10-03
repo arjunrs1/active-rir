@@ -368,7 +368,7 @@ def get_config(
 	#-------------------------- modifying cfgs for visualization -------------------
 	if len(config.VIDEO_OPTION) > 0:
 		config.VISUALIZATION_OPTION = ["top_down_map"]
-		#config.TASK_CONFIG.SIMULATOR.USE_RENDERED_OBSERVATIONS = False
+		config.TASK_CONFIG.SIMULATOR.USE_RENDERED_OBSERVATIONS = False
 
 	config.TASK_CONFIG.freeze()
 

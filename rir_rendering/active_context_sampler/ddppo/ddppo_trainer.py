@@ -220,7 +220,6 @@ class DDPPOTrainer(ActiveRIRTrainer):
 
         batch = None
         observations = None
-        
 
         # episode_rewards and episode_counts accumulates over the entire training course
         episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device)
@@ -329,19 +328,21 @@ class DDPPOTrainer(ActiveRIRTrainer):
                             if len(v) > 1
                             else v[0].sum().item()
                         )
-                        for k, v in window_episode_stats
+                        for k, v in window_episode_stats if k != "rir_error"
                     }
+                    deltas["rir_error"] = (window_episode_rir_error[0] - window_episode_rir_error[-1]).sum().item() if len(window_episode_rir_error) > 1 else window_episode_rir_error[0].sum().item()
                     deltas["count"] = max(deltas["count"], 1.0)
 
                     # this reward is averaged over all the episodes happened during window_size updates
                     # approximately number of steps is window_size * num_steps
-                    writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
-                    writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
-                    writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
-                    writer.add_scalar('Policy/Value_Loss', losses[0], count_steps)
-                    writer.add_scalar('Policy/Action_Loss', losses[1], count_steps)
-                    writer.add_scalar('Policy/Entropy', losses[2], count_steps)
-                    writer.add_scalar('Policy/Learning_Rate', lr_scheduler.get_lr()[0], count_steps)
+                    if update % 10 == 0:
+                        writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
+                        writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
+                        writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
+                        writer.add_scalar('Policy/Value_Loss', losses[0], count_steps)
+                        writer.add_scalar('Policy/Action_Loss', losses[1], count_steps)
+                        writer.add_scalar('Policy/Entropy', losses[2], count_steps)
+                        writer.add_scalar('Policy/Learning_Rate', lr_scheduler.get_lr()[0], count_steps)
 
                     # log stats
                     if update > 0 and update % self.config.LOG_INTERVAL == 0:
@@ -362,7 +363,7 @@ class DDPPOTrainer(ActiveRIRTrainer):
                             window_episode_reward[-1] - window_episode_reward[0]
                         ).sum()
                         window_rir_errors = (
-                            window_episode_rir_error[-1] - window_episode_rir_error[0]
+                            window_episode_rir_error[0] - window_episode_rir_error[-1]
                         ).sum()
                         window_counts = (
                             window_episode_counts[-1] - window_episode_counts[0]

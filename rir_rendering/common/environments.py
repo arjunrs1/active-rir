@@ -195,6 +195,7 @@ class TeleportEnv(habitat.RLEnv):
         self._config = config
         self._core_env_config = config.TASK_CONFIG
 
+        self._previous_action = None
         self._episode_distance_covered = None
         super().__init__(self._core_env_config, dataset)
 
@@ -203,11 +204,12 @@ class TeleportEnv(habitat.RLEnv):
         reset environment
         :return: observation after reset
         """
+        self._previous_action = None
         self._env_step = 0
         observation = super().reset()
+        logging.debug(super().current_episode)
         queries, gt_rirs_mags, gt_rirs_phases = self._env._sim.get_RIR_reward_queries_RIRS()
         ref_pose = self._env._sim.get_reference_pose()
-        logging.debug(super().current_episode)
         return observation, queries, gt_rirs_mags, gt_rirs_phases, ref_pose
 
     def step(self, *args, **kwargs):
@@ -217,6 +219,7 @@ class TeleportEnv(habitat.RLEnv):
         :param kwargs: keyword arguments
         :return: tuple with observation, reward, done/not-done mask and other episode information after current step
         """
+        self._previous_action = kwargs["action"]
         observation, reward, done, info = super().step(*args, **kwargs)
         self._env_step += 1
         return observation, reward, done, info
@@ -227,8 +230,8 @@ class TeleportEnv(habitat.RLEnv):
         :return: reward range
         """
         return (
-            self._rl_config.SLACK_REWARD - 1.0,
-            self._rl_config.SUCCESS_REWARD + 1.0,
+            0.0,
+            1.0,
         )   
 
     def get_reward(self, observations):

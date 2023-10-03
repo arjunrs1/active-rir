@@ -239,40 +239,11 @@ class RelativePoseSensor(Sensor):
             self._current_episode_id = episode_uniq_id
 
         reference_pose = self._sim.get_reference_pose()
-
-        current_pose = [self._sim.get_receiver_position_idx(), self._sim.get_receiver_position_idx(), self._sim.azimuth_angle()]
-
+        current_pose = [self._sim.get_receiver_position_idx(), self._sim.get_receiver_position_idx(), self._sim.azimuth_angle]
         relative_pose = self._sim.compute_relative_pose(current_pose, reference_pose)
 
-        return relative_pose
-    
-""" @registry.register_measure
-class AcousticMapError(Measure):
-    rDistance to goal the episode ends
-   
+        return relative_pose  
 
-    def __init__(
-        self, *args: Any, sim: Simulator, config: Config, **kwargs: Any
-    ):
-        self._start_end_episode_distance = None
-        self._sim = sim
-        self._config = config
-
-        super().__init__()
-
-    def _get_uuid(self, *args: Any, **kwargs: Any):
-        return "acoustic_map_error"
-
-    def reset_metric(self, *args: Any, episode, **kwargs: Any):
-        #self._start_end_episode_distance = episode.info["geodesic_distance"]
-        self._metric = None
-
-    def update_metric(
-        self, *args: Any, episode, action, task: EmbodiedTask, **kwargs: Any
-    ):
-        #distance_to_goal = task.measurements.measures[DistanceToGoal.cls_uuid].get_metric()
-        #self._metric = distance_to_goal / self._start_end_episode_distance
-        self._metric = 1 """
 
 @registry.register_measure
 class AcousticMapError(Measure):

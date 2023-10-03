@@ -119,8 +119,8 @@ class ExplorationDataset(Dataset):
             return
 
         datasetfile_path = config.DATA_PATH.format(version=config.VERSION, split=config.SPLIT)
-        with gzip.open(datasetfile_path, "rt") as f:
-            self.from_json(f.read(), scenes_dir=config.SCENES_DIR, scene_filename=datasetfile_path)
+        #with gzip.open(datasetfile_path, "rt") as f:
+        #    self.from_json(f.read(), scenes_dir=config.SCENES_DIR, scene_filename=datasetfile_path)
 
         # Read separate file for each scene
         dataset_dir = os.path.dirname(datasetfile_path)

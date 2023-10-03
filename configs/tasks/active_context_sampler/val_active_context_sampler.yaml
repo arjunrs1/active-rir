@@ -1,7 +1,7 @@
 ENVIRONMENT:
   MAX_CONTEXT_LENGTH: 20  
   MAX_QUERY_LENGTH: 60
-  MAX_EPISODE_STEPS: 20
+  MAX_EPISODE_STEPS: 500
 
   LOAD_QUERY_FOR_ARBITRARY_RIRS_FROM_DISK: True
   LOAD_CONTEXT_FROM_DISK: True
@@ -24,7 +24,7 @@ SIMULATOR:
     START_POSITION: [0, 0, 0] #change this - used in reconfigure to set start pos/orientation, but episode has this info
     START_ROTATION: [0, 0, 0, 1]
   AGENTS: ["AGENT_0"]
-  TYPE: "SoundSpacesTeleportSim"
+  TYPE: "SoundSpacesSimActiveRIR"
   ACTION_SPACE_CONFIG: "rir-rendering"
   SCENE_DATASET: "mp3d" 
   RENDERED_OBSERVATIONS: "data/scene_observations/"
@@ -93,7 +93,7 @@ TASK:
 
 DATASET:
   TYPE: "Exploration"
-  SPLIT: "val_gxdoqLR6rwA"
+  SPLIT: "val_GdvgFV5R1Z5"
   CONTENT_SCENES: ["*"]
   VERSION: 'v1'
   SCENES_DIR: "data/scene_datasets/mp3d"
