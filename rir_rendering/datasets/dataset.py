@@ -255,7 +255,9 @@ class UniformContextSamplerDataset(Dataset):
     def __getitem__(self, item):
         this_datapoint = self._get_datapoint(item)
 
-        eval_context_pctg = (self.eval_context_percentages[item] if self._eval_mode
+        #eval_context_pctg = (self.eval_context_percentages[item] if self._eval_mode
+        #                            else torch.FloatTensor(1).uniform_(0.05, 1).item())
+        eval_context_pctg = (1.0 if self._eval_mode
                                     else torch.FloatTensor(1).uniform_(0.05, 1).item())
         
         context_views_this_datapoint = torch.from_numpy(this_datapoint["context"]["views"])
@@ -517,14 +519,24 @@ class UniformContextSamplerDataset(Dataset):
         if self._eval_mode:
             datapoint["query"]["scene_srAzs"] = query_scene_srAz_this_datapoint
         return datapoint
+    
+    def find_nth_occurrence(self, lst, target_string, n):
+        count = 0
+        for index, string in enumerate(lst):
+            if string == target_string:
+                count += 1
+                if count == n:
+                    return index
+        return -1  # Return -1 if the nth occurrence is not found in the list
 
-    def get_context(self, datapoint_scene, first_obs):
+    def get_context(self, datapoint_scene, count_index=0, first_obs=None):
         """
         get datapoint given datapoint index (datapoint matters only for eval)
         :param item_: datapoint index
         :return: datapoint
         """
-        item_ = self.arbitrary_rir_scene_names_from_disk.index(datapoint_scene)
+        item_ = self.find_nth_occurrence(self.arbitrary_rir_scene_names_from_disk, datapoint_scene, count_index)
+        #item_ = self.arbitrary_rir_scene_names_from_disk.index(datapoint_scene)
         assert item_ < len(self.arbitrary_rir_query_pose_subgraph_idxs_from_disk)
         datapoint_subgraph_idx = int(self.arbitrary_rir_query_pose_subgraph_idxs_from_disk[item_])
 
@@ -548,6 +560,24 @@ class UniformContextSamplerDataset(Dataset):
 
         context_poses = self._arr_echo_poses_per_scene[datapoint_scene][datapoint_subgraph_idx][context_pose_idxs, :].tolist()
 
+        assert datapoint_scene in self._arr_query_poses_per_scene
+        assert datapoint_subgraph_idx is not None
+        assert datapoint_subgraph_idx in self._arr_query_poses_per_scene[datapoint_scene]
+        self._arr_query_poses_per_scene[datapoint_scene][datapoint_subgraph_idx] =\
+            np.array(self._arr_query_poses_per_scene[datapoint_scene][datapoint_subgraph_idx])
+
+        num_scene_arbitrary_rir_poses = self._arr_query_poses_per_scene[datapoint_scene][datapoint_subgraph_idx].shape[0]
+
+        assert item_ < len(self.arbitrary_rir_query_pose_idxs_from_disk)
+        query_pose_idxs = self.arbitrary_rir_query_pose_idxs_from_disk[item_][:self.max_query_length]
+        assert isinstance(query_pose_idxs, list)
+
+        query_poses = self._arr_query_poses_per_scene[datapoint_scene][datapoint_subgraph_idx][query_pose_idxs, :].tolist()
+
+        if self._eval_mode:
+            self._all_eval_datapoints_sampledEchoPoseIdxs += context_pose_idxs
+            self._all_eval_datapoints_sampledArbitraryPoseIdxs += query_pose_idxs
+        
         datapoint = {}
 
         view_sensor_height = None
@@ -572,17 +602,32 @@ class UniformContextSamplerDataset(Dataset):
 
         assert self._pose_feat_shape[0] == 5
         context_poses_this_datapoint = np.zeros((self.max_context_length, 5)).astype("float32")
+        query_poses_this_datapoint = np.zeros((self.max_query_length, 5)).astype("float32")
 
         context_mask_this_datapoint = np.zeros(self.max_context_length).astype("uint8")
+        query_mask_this_datapoint = np.zeros(self.max_query_length).astype("uint8")
+        query_scene_idxs_this_datapoint = np.zeros(self.max_query_length, dtype="int32")
+        if self._eval_mode:
+            query_scene_srAz_this_datapoint = np.zeros((self.max_query_length, 3), dtype="int32")
 
         assert self._echo_feat_shape is not None
         context_echoes_mag_this_datapoint = np.zeros((self.max_context_length,
                                                       self._echo_feat_shape[0],
                                                       self._echo_feat_shape[1],
                                                       self._echo_feat_shape[2])).astype("float32")
+        
+        gt_queryImpEchoes_mag_this_datapoint = np.zeros((self.max_query_length,
+                                                         self._echo_feat_shape[0],
+                                                         self._echo_feat_shape[1],
+                                                         self._echo_feat_shape[2])).astype("float32")
+        if self._eval_mode:
+            gt_queryImpEchoes_phase_this_datapoint = np.zeros((self.max_query_length,
+                                                               self._echo_feat_shape[0],
+                                                               self._echo_feat_shape[1],
+                                                               self._echo_feat_shape[2])).astype("float32")
 
         assert len(context_poses) >= 1, "can't compute relative query pose if there isn't at least 1 valid entry in context"
-        ref_pose_for_computing_rel_pose = first_obs
+        ref_pose_for_computing_rel_pose = context_poses[0] #if first_obs is None else first_obs
 
         for context_idx in range(self.max_context_length):
             if context_idx < len(context_poses):
@@ -627,6 +672,50 @@ class UniformContextSamplerDataset(Dataset):
         datapoint["context_echoes"] = torch.from_numpy(context_echoes_mag_this_datapoint)
         datapoint["context_poses"] = torch.from_numpy(context_poses_this_datapoint)
         datapoint["context_mask"] = torch.from_numpy(context_mask_this_datapoint)
+
+        for query_idx in range(self.max_query_length):
+            if query_idx < len(query_poses):
+                curr_query_entry_gtImpEcho_mag, curr_query_entry_gtImpEcho_phase =\
+                    self._compute_spect(scene=datapoint_scene,
+                                        azimuth=int(query_poses[query_idx][2]),
+                                        receiver_node=int(query_poses[query_idx][0]),
+                                        source_node=int(query_poses[query_idx][1]),
+                                        )
+                gt_queryImpEchoes_mag_this_datapoint[query_idx] = curr_query_entry_gtImpEcho_mag
+                if self._eval_mode:
+                    gt_queryImpEchoes_phase_this_datapoint[query_idx] = curr_query_entry_gtImpEcho_phase
+
+                curr_query_entry_pose =\
+                    np.array(self._compute_relative_pose(current_pose=query_poses[query_idx],
+                                                         ref_pose=ref_pose_for_computing_rel_pose,
+                                                         scene_graph=self._all_scenes_graphs_this_split[datapoint_scene],
+                                                         )).astype("float32")
+                query_poses_this_datapoint[query_idx] = curr_query_entry_pose
+
+                query_mask_this_datapoint[query_idx] = 1
+
+                assert datapoint_scene in SCENE_NAME_TO_IDX[self.scene_dataset]
+                query_scene_idxs_this_datapoint[query_idx] = SCENE_NAME_TO_IDX[self.scene_dataset][datapoint_scene]
+
+                if self._eval_mode:
+                    # max_query_length x 3 ... in the order of s, r, Az
+                    # s gets assigned
+                    query_scene_srAz_this_datapoint[query_idx][0] = int(query_poses[query_idx][1])
+                    # az gets assigned
+                    query_scene_srAz_this_datapoint[query_idx][2] = int(query_poses[query_idx][2])
+                    # r gets assigned
+                    query_scene_srAz_this_datapoint[query_idx][1] = int(query_poses[query_idx][0])
+
+        if first_obs is None:
+            #datapoint["query"] = {}
+            #datapoint["query"]["gt_impEchoes_mag"] = gt_queryImpEchoes_mag_this_datapoint
+            #if self._eval_mode:
+            #    datapoint["query"]["gt_impEchoes_phase"] = gt_queryImpEchoes_phase_this_datapoint
+            datapoint["query_poses"] = torch.from_numpy(query_poses_this_datapoint)
+            datapoint["query_mask"] = torch.from_numpy(query_mask_this_datapoint)
+            datapoint["query_scene_idxs"] = torch.from_numpy(query_scene_idxs_this_datapoint)
+            #if self._eval_mode:
+            #    datapoint["query"]["scene_srAzs"] = query_scene_srAz_this_datapoint
 
         return datapoint
 

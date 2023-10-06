@@ -9,7 +9,7 @@
 import os
 import time
 import logging
-from collections import deque
+from collections import deque, Counter
 from typing import Dict, List
 import json
 import random
@@ -23,6 +23,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 from numpy.linalg import norm
 from gym import spaces
+from collections import defaultdict
 
 from habitat import logger, Config
 from habitat.utils.visualizations.utils import observations_to_image
@@ -59,6 +60,15 @@ class ActiveRIRTrainer(BaseRLTrainer):
         self.actor_critic = None
         self.agent = None
         self.envs = None
+
+        with open(self.config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_SEEN_ENV_EVAL_SCENE_NAMES_PATH, "rb") as f:
+            seen_scenes = pickle.load(f)
+
+        with open(self.config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH, "rb") as f:
+            unseen_scenes = pickle.load(f)
+
+        scene_names = seen_scenes + unseen_scenes
+        self.scene_count = dict(Counter(scene_names))
 
     def get_novelty_reward(self, env_index, curr_obs):
         if curr_obs is not None:
@@ -179,9 +189,17 @@ class ActiveRIRTrainer(BaseRLTrainer):
         return context
 
     def _current_measurement_error(self, context_observations, env_index, return_all_metrics=False):
-        pred_rirs = self.rir_predictor(context_observations)
-        pred_spect_mag = torch.exp(pred_rirs.view(-1, *pred_rirs.size()[2:]))\
-                                                     - self.config.UniformContextSampler.log_gt_eps
+        with torch.no_grad():
+            preds = self.rir_predictor(context_observations)
+        
+        if self.config.UniformContextSampler.predict_in_logspace:
+            if self.config.UniformContextSampler.log_instead_of_log1p_in_logspace:
+                pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]))\
+                                    - self.config.UniformContextSampler.log_gt_eps
+            else:
+                pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:])) - 1
+        else:
+            pred_spect_mag = preds.view(-1, *preds.size()[2:])
         
         gt_rirs_mag = self.gt_rirs_mag[env_index]
         gt_rirs_phase = self.gt_rirs_phase[env_index]
@@ -729,9 +747,9 @@ class ActiveRIRTrainer(BaseRLTrainer):
         )
 
         if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
-            self.intermediate_rir_errors = [[] for _ in range(self.config.TEST_EPISODE_COUNT)]
+            self.intermediate_rir_errors = [defaultdict(list) for _ in range(self.config.TEST_EPISODE_COUNT)]
         if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
-            self.intermediate_fs_rir_errors = [[] for _ in range(self.config.TEST_EPISODE_COUNT)]
+            self.intermediate_fs_rir_errors = [defaultdict(list) for _ in range(self.config.TEST_EPISODE_COUNT)]
 
 
         stats_episodes = dict()  # dict of dicts that stores stats per episode
@@ -841,22 +859,24 @@ class ActiveRIRTrainer(BaseRLTrainer):
                         if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
                             print('computing episode {} intermediate ActiveRIR error metrics...'.format(len(stats_episodes)))
                             for n in range(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH):
-                                self.intermediate_rir_errors[len(stats_episodes)].append(self._get_rir_error(self.context_observations[i], n+1, i, return_all_metrics=True)[0])
+                                self.intermediate_rir_errors[len(stats_episodes)]['metrics'].append(self._get_rir_error(self.context_observations[i], n+1, i, return_all_metrics=True)[0])
+                            self.intermediate_rir_errors[len(stats_episodes)]['episode'] = (current_episodes[i].scene_id, current_episodes[i].episode_id)
                             print("done")
                             
                         if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
                             print("computing intermediate FS-RIR error metrics...")
-                            obs = self.get_fs_rir_obs()
+                            obs = self.get_fs_rir_obs(len(stats_episodes))
                             obs = {key: val.unsqueeze(0) for key, val in obs.items()}                    
                             fs_mask = torch.zeros(obs['context_mask'].shape)
-                            query_poses = torch.unsqueeze(torch.tensor(self.query_positions[i]),0)
-                            query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
-                            obs['query_poses'] = query_poses
-                            obs['query_mask'] = query_mask
+                            #query_poses = torch.unsqueeze(torch.tensor(self.query_positions[i]),0)
+                            #query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
+                            #obs['query_poses'] = query_poses
+                            #obs['query_mask'] = query_mask
                             for n in range(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH):
                                 fs_mask[0,n] = 1
                                 obs['context_mask'] = fs_mask
-                                self.intermediate_fs_rir_errors[len(stats_episodes)].append(self._current_measurement_error(obs, 0, return_all_metrics=True)[0])
+                                self.intermediate_fs_rir_errors[len(stats_episodes)]['metrics'].append(self._current_measurement_error(obs, 0, return_all_metrics=True)[0])
+                            self.intermediate_fs_rir_errors[len(stats_episodes)]['episode'] = (current_episodes[i].scene_id, current_episodes[i].episode_id)
 
                     self.reset_and_initialize_context(observations[i], env_index=i)
                     # use scene_id + episode_id as unique id for storing stats
@@ -1019,7 +1039,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         initial_context['pose'] = torch.tensor(np.array(observations['pose']), dtype=torch.float32)
         self.context_observations[env_index].append(initial_context)
 
-    def get_fs_rir_obs(self):
+    def get_fs_rir_obs(self, index):
         scene = self.config.TASK_CONFIG.DATASET.SPLIT.split("_")[1]
         scene_observations_dir = os.path.join(self.config.TASK_CONFIG.SIMULATOR.RENDERED_OBSERVATIONS, self.config.TASK_CONFIG.SIMULATOR.SCENE_DATASET)
         assert os.path.isdir(scene_observations_dir)
@@ -1047,7 +1067,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 ckpt_rootdir_path=self.config.MODEL_DIR,
             )
 
-        context = dataset.get_context(scene, self.pref_ref_pose)
+        context = dataset.get_context(scene, count_index=(index % self.scene_count[scene]) + 1)#, self.pref_ref_pose)
 
         return context
 
