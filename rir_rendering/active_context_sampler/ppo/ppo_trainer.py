@@ -326,8 +326,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 rewards[i] = 0.0
             else:
                 observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
-                print("action:")
-                print(actions[i][0].item())
                 if (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
                     context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
                     self.context_observations[i].append(context_obs)
@@ -867,7 +865,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             
                         if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
                             print("computing intermediate FS-RIR error metrics...")
-                            obs = self.get_fs_rir_obs(len(stats_episodes))
+                            obs = self.get_fs_rir_obs(current_episodes[i].scene_id, len(stats_episodes))
                             obs = {key: val.unsqueeze(0) for key, val in obs.items()}                    
                             fs_mask = torch.zeros(obs['context_mask'].shape)
                             #query_poses = torch.unsqueeze(torch.tensor(self.query_positions[i]),0)
@@ -1041,8 +1039,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
         initial_context['pose'] = torch.tensor(np.array(observations['pose']), dtype=torch.float32)
         self.context_observations[env_index].append(initial_context)
 
-    def get_fs_rir_obs(self, index):
-        scene = self.config.TASK_CONFIG.DATASET.SPLIT.split("_")[1]
+    def get_fs_rir_obs(self, scene, index):
+        scene = scene.split("/")[-1].split(".")[0]
         scene_observations_dir = os.path.join(self.config.TASK_CONFIG.SIMULATOR.RENDERED_OBSERVATIONS, self.config.TASK_CONFIG.SIMULATOR.SCENE_DATASET)
         assert os.path.isdir(scene_observations_dir)
         all_scenes_observations = dict()
