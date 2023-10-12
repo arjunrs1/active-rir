@@ -6,7 +6,7 @@ TORCH_GPU_ID: 0
 VIDEO_OPTION: []
 TENSORBOARD_DIR: "tb"
 VIDEO_DIR: "video_dir"
-TEST_EPISODE_COUNT: 25
+TEST_EPISODE_COUNT: 700
 #EVAL_CKPT_PATH_DIR: "data/new_checkpoints"
 NUM_ENVIRONMENTS: 6
 SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"]
@@ -32,7 +32,7 @@ UniformContextSampler:
   log_gt_eps: 1.0e-8
 
   EvalMetrics:
-    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "rel_diff_rt_startFrom60dB", "rel_diff_edt"] #, "diff_drr_3ms", "rel_diff_drr_3ms", "diff_ratio_lrEnergy",
+    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "rel_diff_rt_startFrom60dB", "rel_diff_edt", "diff_drr_3ms", "rel_diff_drr_3ms"] #, "diff_drr_3ms", "rel_diff_drr_3ms", "diff_ratio_lrEnergy",
 
   encode_each_modality_as_independent_context_entry: True
   append_modality_type_tag_encoding_to_each_modality_encoding: True
@@ -73,7 +73,7 @@ RL:
     eps: 1e-5
     max_grad_norm: 0.5
     # decide the length of history that ppo encodes
-    num_steps: 20
+    num_steps: 150
     hidden_size: 512
     use_gae: True
     gamma: 0.99

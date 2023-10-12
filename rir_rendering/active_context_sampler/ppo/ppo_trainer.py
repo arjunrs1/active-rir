@@ -69,7 +69,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         scene_names = seen_scenes + unseen_scenes
         self.scene_count = dict(Counter(scene_names))
-
     def get_novelty_reward(self, env_index, curr_obs):
         if curr_obs is not None:
             pose = tuple(curr_obs['pose'])[:2]
@@ -191,7 +190,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
     def _current_measurement_error(self, context_observations, env_index, return_all_metrics=False):
         with torch.no_grad():
             preds = self.rir_predictor(context_observations)
-        
+
         if self.config.UniformContextSampler.predict_in_logspace:
             if self.config.UniformContextSampler.log_instead_of_log1p_in_logspace:
                 pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]))\
@@ -321,16 +320,18 @@ class ActiveRIRTrainer(BaseRLTrainer):
         episode_rir_error = [0] * len(dones)
         for i, done in enumerate(dones):
             if done:
-                episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], 20, i)[0]['stft_l1_distance']).mean()
+                mask_size = min(20, len(self.context_observations[i]))
+                episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
                 observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
                 rewards[i] = 0.0
             else:
                 observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
-                #TO DO: make it relative to first obs
-                if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
+                print("action:")
+                print(actions[i][0].item())
+                if (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
                     context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
                     self.context_observations[i].append(context_obs)
-                rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(current_episode_step[i].item()==self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS-2))
+                rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(len(self.context_observations[i])==self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-1))
 
         logging.debug('Reward: {}'.format(rewards[0]))
 
@@ -791,17 +792,18 @@ class ActiveRIRTrainer(BaseRLTrainer):
             episode_rir_error = [0] * len(dones)
             for i, done in enumerate(dones):
                 if done:
-                    episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], 20, i)[0]['stft_l1_distance']).mean()
+                    mask_size = min(20, len(self.context_observations[i]))
+                    episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
                     if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
                         self.pref_ref_pose = self.ref_pose
                     observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i, reset_context=False)
                     rewards[i] = 0.0
                 else:
-                    observations[i]['depth'] = observations[i]['depth'].squeeze(-1) if len(observations[i]['depth']) == 4 else observations[i]['depth']
-                    if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
+                    observations[i]['depth'] = observations[i]['depth'].squeeze(-1) if len(observations[i]['depth'].shape) == 4 else observations[i]['depth']
+                    if (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
                         context_obs = {k: v[i].cpu() for k, v in batch.items()}
                         self.context_observations[i].append(context_obs)
-                    rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(current_episode_step[i].item()==self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS-2))
+                    rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(len(self.context_observations[i])==self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-1))
 
             current_episode_step += 1
             for i in range(self.envs.num_envs):
@@ -858,7 +860,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS or self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
                         if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
                             print('computing episode {} intermediate ActiveRIR error metrics...'.format(len(stats_episodes)))
-                            for n in range(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH):
+                            for n in range(len(self.context_observations[i])):
                                 self.intermediate_rir_errors[len(stats_episodes)]['metrics'].append(self._get_rir_error(self.context_observations[i], n+1, i, return_all_metrics=True)[0])
                             self.intermediate_rir_errors[len(stats_episodes)]['episode'] = (current_episodes[i].scene_id, current_episodes[i].episode_id)
                             print("done")
@@ -872,7 +874,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             #query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
                             #obs['query_poses'] = query_poses
                             #obs['query_mask'] = query_mask
-                            for n in range(self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH):
+                            for n in range(len(self.context_observations[i])):
                                 fs_mask[0,n] = 1
                                 obs['context_mask'] = fs_mask
                                 self.intermediate_fs_rir_errors[len(stats_episodes)]['metrics'].append(self._current_measurement_error(obs, 0, return_all_metrics=True)[0])
@@ -1059,14 +1061,13 @@ class ActiveRIRTrainer(BaseRLTrainer):
         all_scenes_graphs_this_split[scene] = graph
 
         dataset = UniformContextSamplerDataset(
-                split="seen_eval",
+                split="unseen_eval",
                 all_scenes_graphs_this_split=all_scenes_graphs_this_split,
                 cfg=self.config,
                 all_scenes_observations=all_scenes_observations,
                 eval_mode=True,
                 ckpt_rootdir_path=self.config.MODEL_DIR,
             )
-
         context = dataset.get_context(scene, count_index=(index % self.scene_count[scene]) + 1)#, self.pref_ref_pose)
 
         return context

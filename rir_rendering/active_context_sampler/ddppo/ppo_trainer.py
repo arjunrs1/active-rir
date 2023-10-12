@@ -9,11 +9,12 @@
 import os
 import time
 import logging
-from collections import deque
+from collections import deque, Counter
 from typing import Dict, List
 import json
 import random
 import math
+import pickle
 
 import numpy as np
 import torch
@@ -22,6 +23,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 from numpy.linalg import norm
 from gym import spaces
+from collections import defaultdict
 
 from habitat import logger, Config
 from habitat.utils.visualizations.utils import observations_to_image
@@ -43,6 +45,8 @@ from rir_rendering.active_context_sampler.ppo.ppo import PPO
 from rir_rendering.active_context_sampler.ppo.ppo_trainer import load_rir_predictor
 from rir_rendering.uniform_context_sampler.policy import UniformContextSamplerPolicy
 from rir_rendering.common.eval_metrics import compute_spect_metrics
+from habitat_audio.utils import load_points_data
+from rir_rendering.datasets.dataset import UniformContextSamplerDataset
 
 class DataParallelPassthrough(torch.nn.DataParallel):
     def __getattr__(self, name):
@@ -63,6 +67,15 @@ class ActiveRIRTrainer(BaseRLTrainer):
         self.actor_critic = None
         self.agent = None
         self.envs = None
+
+        with open(self.config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_SEEN_ENV_EVAL_SCENE_NAMES_PATH, "rb") as f:
+            seen_scenes = pickle.load(f)
+
+        with open(self.config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH, "rb") as f:
+            unseen_scenes = pickle.load(f)
+
+        scene_names = seen_scenes + unseen_scenes
+        self.scene_count = dict(Counter(scene_names))
 
         self._static_smt_encoder = False
         self._encoder = None
@@ -187,9 +200,17 @@ class ActiveRIRTrainer(BaseRLTrainer):
         return context
 
     def _current_measurement_error(self, context_observations, env_index, return_all_metrics=False):
-        pred_rirs = self.rir_predictor(context_observations)
-        pred_spect_mag = torch.exp(pred_rirs.view(-1, *pred_rirs.size()[2:]))\
-                                                     - self.config.UniformContextSampler.log_gt_eps
+        with torch.no_grad():
+            preds = self.rir_predictor(context_observations)
+
+        if self.config.UniformContextSampler.predict_in_logspace:
+            if self.config.UniformContextSampler.log_instead_of_log1p_in_logspace:
+                pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]))\
+                                    - self.config.UniformContextSampler.log_gt_eps
+            else:
+                pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:])) - 1
+        else:
+            pred_spect_mag = preds.view(-1, *preds.size()[2:])
         
         gt_rirs_mag = self.gt_rirs_mag[env_index]
         gt_rirs_phase = self.gt_rirs_phase[env_index]
@@ -311,16 +332,18 @@ class ActiveRIRTrainer(BaseRLTrainer):
         episode_rir_error = [0] * len(dones)
         for i, done in enumerate(dones):
             if done:
-                episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], 20, i)[0]['stft_l1_distance']).mean()
+                mask_size = min(20, len(self.context_observations[i]))
+                episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
                 observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
                 rewards[i] = 0.0
             else:
                 observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
                 #TO DO: make it relative to first obs
-                if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
+                #if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
+                if (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
                     context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
                     self.context_observations[i].append(context_obs)
-                rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(current_episode_step[i].item()==self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS-2))
+                rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(len(self.context_observations[i])==self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-1))
 
         logging.debug('Reward: {}'.format(rewards[0]))
 

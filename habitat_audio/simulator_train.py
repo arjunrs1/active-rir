@@ -863,6 +863,7 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         self._egomap_cache = defaultdict(dict)
         self._scene_observations = None
         self._episode_step_count = None
+        self._collected_context = None
         self._is_episode_active = None
         self._position_to_index_mapping = dict()
         self._previous_step_collided = False
@@ -1186,6 +1187,7 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             self._spectrogram_cache = dict()
 
         self._episode_step_count = 0
+        self._collected_context = 0
 
         # set agent positions
         self._receiver_position_index = self._position_to_index(self.config.AGENT_0.START_POSITION)
@@ -1412,15 +1414,15 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             "episode is not active, environment not RESET or "
             "STOP action called previously"
         )
-
         self._previous_step_collided = False
-        # STOP: 0, FORWARD: 1, LEFT: 2, RIGHT: 2
-        if self._episode_step_count == self.config_yaml.MAX_EPISODE_STEPS:
+        # STOP: 0, FORWARD: 1, LEFT: 2, RIGHT: 3
+        #TO DO: Fix so that MAX_CONTEXT_LENGTH is in the yaml passed to simulator, use in place of 19
+        if (self._episode_step_count == self.config_yaml.MAX_EPISODE_STEPS) or (self._collected_context == 19):
             self._is_episode_active = False
         else:
             prev_position_index = self._receiver_position_index
             prev_rotation_angle = self._rotation_angle
-            if action == HabitatSimActions.MOVE_FORWARD:
+            if action == HabitatSimActions.MOVE_FORWARD or action == HabitatSimActions.MOVE_FORWARD_COLLECT:
                 # the agent initially faces -Z by default
                 self._previous_step_collided = True
                 for neighbor in self.graph[self._receiver_position_index]:
@@ -1432,11 +1434,17 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
                         self._source_position_index = self._receiver_position_index
                         self._previous_step_collided = False
                         break
-            elif action == HabitatSimActions.TURN_LEFT:
+                if action == HabitatSimActions.MOVE_FORWARD_COLLECT:
+                    self._collected_context += 1
+            elif action == HabitatSimActions.TURN_LEFT or action == HabitatSimActions.TURN_LEFT_COLLECT:
                 # agent rotates counterclockwise, so turning left means increasing rotation angle by 90
                 self._rotation_angle = (self._rotation_angle + 90) % 360
-            elif action == HabitatSimActions.TURN_RIGHT:
+                if action == HabitatSimActions.TURN_LEFT_COLLECT:
+                    self._collected_context += 1
+            elif action == HabitatSimActions.TURN_RIGHT or action == HabitatSimActions.TURN_RIGHT_COLLECT:
                 self._rotation_angle = (self._rotation_angle - 90) % 360
+                if action == HabitatSimActions.TURN_RIGHT_COLLECT:
+                    self._collected_context += 1
 
             if self.config.CONTINUOUS_VIEW_CHANGE:
                 intermediate_observations = list()

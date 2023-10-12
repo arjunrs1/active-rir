@@ -11,11 +11,12 @@ import os
 import random
 import time
 import logging
-from collections import defaultdict, deque
+from collections import defaultdict, deque, Counter
 from typing import Dict, List
 import json
 import random
 import math
+import pickle
 
 import numpy as np
 import torch
@@ -26,6 +27,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 from numpy.linalg import norm
 from gym import spaces
+from collections import defaultdict
 
 from habitat import logger, Config
 from habitat.utils.visualizations.utils import observations_to_image

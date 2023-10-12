@@ -9,6 +9,9 @@ HabitatSimActions.extend_action_space("PAUSE")
 temp = HabitatSimActions.STOP
 HabitatSimActions._known_actions["STOP"] = HabitatSimActions.PAUSE
 HabitatSimActions._known_actions["PAUSE"] = temp
+HabitatSimActions.extend_action_space("MOVE_FORWARD_COLLECT")
+HabitatSimActions.extend_action_space("TURN_LEFT_COLLECT")
+HabitatSimActions.extend_action_space("TURN_RIGHT_COLLECT")
 
 
 @registry.register_action_space_configuration(name="rir-rendering")
@@ -28,6 +31,20 @@ class RIRRenderingActionSpaceConfiguration(ActionSpaceConfiguration):
             ),
             HabitatSimActions.TURN_RIGHT: habitat_sim.ActionSpec(
                 "turn_right",
+                habitat_sim.ActuationSpec(amount=self.config.TURN_ANGLE),
+            ),
+            HabitatSimActions.MOVE_FORWARD_COLLECT: habitat_sim.ActionSpec(
+                "move_forward_collect",
+                habitat_sim.ActuationSpec(
+                    amount=self.config.FORWARD_STEP_SIZE
+                ),
+            ),
+            HabitatSimActions.TURN_LEFT_COLLECT: habitat_sim.ActionSpec(
+                "turn_left_collect",
+                habitat_sim.ActuationSpec(amount=self.config.TURN_ANGLE),
+            ),
+            HabitatSimActions.TURN_RIGHT_COLLECT: habitat_sim.ActionSpec(
+                "turn_right_collect",
                 habitat_sim.ActuationSpec(amount=self.config.TURN_ANGLE),
             ),
         }
