@@ -254,6 +254,7 @@ class DDPPOTrainer(ActiveRIRTrainer):
             else contextlib.suppress()
         ) as writer:
             for update in range(self.config.NUM_UPDATES):
+                self.num_updates += 1
                 if ppo_cfg.use_linear_lr_decay:
                     lr_scheduler.step()
 

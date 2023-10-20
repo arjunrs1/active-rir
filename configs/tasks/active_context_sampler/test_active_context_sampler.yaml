@@ -16,20 +16,21 @@ ENVIRONMENT:
   ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/unseenEnv_eval_364datapoints_sceneNames.pkl"
 
 SIMULATOR:
+  USE_RENDERED_OBSERVATIONS: False
   AGENT_0:
-    #HEIGHT: 1.5
-    #RADIUS: 0.1
+    HEIGHT: 1.5
+    RADIUS: 0.1
     SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"]
-    #IS_SET_START_STATE: False
-    #START_POSITION: [0, 0, 0] #change this - used in reconfigure to set start pos/orientation, but episode has this info
-    #START_ROTATION: [0, 0, 0, 1]
+    IS_SET_START_STATE: False
+    START_POSITION: [0, 0, 0] #change this - used in reconfigure to set start pos/orientation, but episode has this info
+    START_ROTATION: [0, 0, 0, 1]
   AGENTS: ["AGENT_0"]
   TYPE: "SoundSpacesSimActiveRIR"
   ACTION_SPACE_CONFIG: "rir-rendering"
   SCENE_DATASET: "mp3d" 
   RENDERED_OBSERVATIONS: "data/scene_observations/"
   SENSORS: ['RGB_SENSOR', 'DEPTH_SENSOR'] 
-  GRID_SIZE: 1.0 
+  GRID_SIZE: 1.0
   HABITAT_SIM_V0:
     GPU_DEVICE_ID: 0
   RGB_SENSOR:

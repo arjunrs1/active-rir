@@ -12,6 +12,7 @@ ENVIRONMENT:
   EVAL_CONTEXT_PERCENTAGES_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/valid_context_percentages.npy"
 
 SIMULATOR:
+  USE_RENDERED_OBSERVATIONS: False
   AGENT_0:
     HEIGHT: 1.5
     RADIUS: 0.1

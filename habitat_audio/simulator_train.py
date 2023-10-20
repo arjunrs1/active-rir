@@ -8,6 +8,8 @@ import os
 import json
 
 import librosa
+import psutil
+import scipy
 import torch
 import numpy as np
 import networkx as nx
@@ -27,6 +29,19 @@ from soundspaces.utils import load_metadata
 from habitat.utils.geometry_utils import quaternion_rotate_vector
 from habitat.tasks.utils import cartesian_to_polar
 from soundspaces.mp3d_utils import HouseReader
+
+def calculate_mem_usage():
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024.0 / 1024 / 1024  # in GB
+
+
+def crossfade(x1, x2, sr):
+    crossfade_samples = int(0.05 * sr)  # 30 ms
+    x2_weight = np.arange(crossfade_samples + 1) / crossfade_samples
+    x1_weight = np.flip(x2_weight)
+    x3 = [x1[:, :crossfade_samples+1] * x1_weight + x2[:, :crossfade_samples+1] * x2_weight, x2[:, crossfade_samples+1:]]
+
+    return np.concatenate(x3, axis=1)
 
 class DummySimulator:
     def __init__(self):
@@ -887,7 +902,8 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         else:
             self._sim = habitat_sim.Simulator(config=self.sim_config)
             self.add_acoustic_config()
-            self.material_configured = False
+            self._last_rir = None
+            self._current_sample_index = 0
 
         self.config_yaml = config
         assert self.config_yaml.SCENE_DATASET in ["mp3d"], "SCENE_DATASET needs to be in ['mp3d']"
@@ -992,6 +1008,9 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
                 "linear_friction",
                 "angular_friction",
                 "coefficient_of_restitution",
+                "distractor_sound_id",
+                "distractor_position_index",
+                "query_position_idxs"
             },
         )
 
@@ -1151,7 +1170,7 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             self.is_same_scene = False
             self._current_scene = config.SCENE
             logging.debug('Current scene: {}'.format(self.current_scene_name))
-
+            
             if self.config.USE_RENDERED_OBSERVATIONS:
                 with open(self.current_scene_observation_file, 'rb') as fo:
                     self._frame_cache = pickle.load(fo)
@@ -1160,12 +1179,9 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
                 del self._sim
                 self.sim_config = self.create_sim_config(self._sensor_suite)
                 self._sim = habitat_sim.Simulator(self.sim_config)
-                if not self.config.USE_RENDERED_OBSERVATIONS:
-                    self.add_acoustic_config()
-                    self.material_configured = False
-                self._update_agents_state()
-                self._frame_cache = dict()
-
+                self.add_acoustic_config()
+                audio_sensor = self._sim.get_agent(0)._sensors["audio_sensor"]
+                audio_sensor.setAudioMaterialsJSON("data/mp3d_material_config.json")
             logging.debug('Loaded scene {}'.format(self.current_scene_name))
 
             self.points, self.graph = load_metadata(self.metadata_dir)
@@ -1175,12 +1191,11 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         else:
             self.is_same_scene = True
 
+        self._update_agents_state()
+        audio_sensor = self._sim.get_agent(0)._sensors["audio_sensor"]
         if not self.config.USE_RENDERED_OBSERVATIONS:
-            audio_sensor = self._sim.get_agent(0)._sensors["audio_sensor"]
+            #TO DO: modify to set audio source transform after moving to a new location!!
             audio_sensor.setAudioSourceTransform(np.array(self.config.AGENT_0.START_POSITION) + np.array([0, 1.5, 0]))
-            if not self.material_configured:
-                audio_sensor.setAudioMaterialsJSON("data/mp3d_material_config.json")
-                self.material_configured = True
 
         if not is_same_scene:
             self._audiogoal_cache = dict()
@@ -1188,6 +1203,8 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
 
         self._episode_step_count = 0
         self._collected_context = 0
+        self._last_rir = None
+        self._current_sample_index = np.random.randint(self.config.AUDIO.RIR_SAMPLING_RATE * self.config.STEP_TIME)
 
         # set agent positions
         self._receiver_position_index = self._position_to_index(self.config.AGENT_0.START_POSITION)
@@ -1202,14 +1219,6 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         else:
             self.set_agent_state(list(self.graph.nodes[self._receiver_position_index]['point']),
                                  self.config.AGENT_0.START_ROTATION)
-
-        if self.config.AUDIO.HAS_DISTRACTOR_SOUND:
-            self._distractor_position_index = self.config.AGENT_0.DISTRACTOR_POSITION_INDEX
-            self._current_distractor_sound = self.config.AGENT_0.DISTRACTOR_SOUND_ID
-            self._load_single_distractor_sound()
-
-        if self._use_oracle_planner:
-            self._oracle_actions = self.compute_oracle_actions()
 
         logging.debug("Initial source, agent at: {}, {}, orientation: {}".
                       format(self._source_position_index, self._receiver_position_index, self.get_orientation()))
@@ -1368,7 +1377,7 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         else:
             sim_obs = self._sim.reset()
             if self._update_agents_state():
-                sim_obs = self._get_sim_observation()
+                sim_obs = self._sim.get_sensor_observations()
 
         self._is_episode_active = True
         self._prev_sim_obs = sim_obs
@@ -1414,13 +1423,17 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             "episode is not active, environment not RESET or "
             "STOP action called previously"
         )
-        self._previous_step_collided = False
+        self._last_rir = np.transpose(np.array(self._prev_sim_obs["audio_sensor"]))
+        #self._previous_step_collided = False
         # STOP: 0, FORWARD: 1, LEFT: 2, RIGHT: 3
-        #TO DO: Fix so that MAX_CONTEXT_LENGTH is in the yaml passed to simulator, use in place of 19
-        if (self._episode_step_count == self.config_yaml.MAX_EPISODE_STEPS) or (self._collected_context == 19):
-            self._is_episode_active = False
+        if self.config_yaml.UNIFORM_SAMPLE:
+            if (self._episode_step_count == self.config_yaml.MAX_EPISODE_STEPS):
+                self._is_episode_active = False
         else:
-            prev_position_index = self._receiver_position_index
+            if (self._episode_step_count == self.config_yaml.MAX_EPISODE_STEPS) or (self._collected_context == 19):
+                self._is_episode_active = False
+        #else:
+            """ prev_position_index = self._receiver_position_index
             prev_rotation_angle = self._rotation_angle
             if action == HabitatSimActions.MOVE_FORWARD or action == HabitatSimActions.MOVE_FORWARD_COLLECT:
                 # the agent initially faces -Z by default
@@ -1444,9 +1457,11 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             elif action == HabitatSimActions.TURN_RIGHT or action == HabitatSimActions.TURN_RIGHT_COLLECT:
                 self._rotation_angle = (self._rotation_angle - 90) % 360
                 if action == HabitatSimActions.TURN_RIGHT_COLLECT:
-                    self._collected_context += 1
+                    self._collected_context += 1 """
+        if (action == HabitatSimActions.TURN_RIGHT_COLLECT) or (action == HabitatSimActions.TURN_LEFT_COLLECT) or (action == HabitatSimActions.MOVE_FORWARD_COLLECT):
+            self._collected_context += 1
 
-            if self.config.CONTINUOUS_VIEW_CHANGE:
+            """ if self.config.CONTINUOUS_VIEW_CHANGE:
                 intermediate_observations = list()
                 fps = self.config.VIEW_CHANGE_FPS
                 if action == HabitatSimActions.MOVE_FORWARD:
@@ -1470,25 +1485,34 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
                                                                   np.array([0, 1, 0])))
                         sim_obs = self._sim.get_sensor_observations()
                         observations = self._sensor_suite.get_observations(sim_obs)
-                        intermediate_observations.append(observations)
+                        intermediate_observations.append(observations) """
 
-            self.set_agent_state(list(self.graph.nodes[self._receiver_position_index]['point']),
-                                 quat_from_angle_axis(np.deg2rad(self._rotation_angle), np.array([0, 1, 0])))
-        self._episode_step_count += 1
+            #self.set_agent_state(list(self.graph.nodes[self._receiver_position_index]['point']),
+            #                     quat_from_angle_axis(np.deg2rad(self._rotation_angle), np.array([0, 1, 0])))
+        if action == HabitatSimActions.TURN_RIGHT_COLLECT:
+            sim_obs = self._sim.step(HabitatSimActions.TURN_RIGHT)
+        elif action == HabitatSimActions.TURN_LEFT_COLLECT:
+            sim_obs = self._sim.step(HabitatSimActions.TURN_LEFT)
+        elif action == HabitatSimActions.MOVE_FORWARD_COLLECT:
+            sim_obs = self._sim.step(HabitatSimActions.MOVE_FORWARD)
+        else:
+            sim_obs = self._sim.step(action)
+        self._prev_sim_obs = sim_obs
 
         # log debugging info
         logging.debug('After taking action {}, s,r: {}, {}, orientation: {}, location: {}'.format(
             action, self._source_position_index, self._receiver_position_index,
             self.get_orientation(), self.graph.nodes[self._receiver_position_index]['point']))
 
-        sim_obs = self._get_sim_observation()
+        #sim_obs = self._get_sim_observation()
 
         if self.config.USE_RENDERED_OBSERVATIONS:
             self._sim.set_sensor_observations(sim_obs)
-        self._prev_sim_obs = sim_obs
+        #self._prev_sim_obs = sim_obs
         observations = self._sensor_suite.get_observations(sim_obs)
-        if self.config.CONTINUOUS_VIEW_CHANGE:
-            observations['intermediate'] = intermediate_observations
+        self._episode_step_count += 1
+        """ if self.config.CONTINUOUS_VIEW_CHANGE:
+            observations['intermediate'] = intermediate_observations """
 
         return observations
 
@@ -1527,6 +1551,8 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         if self._current_sound not in self._source_sound_dict:
             audio_data, sr = librosa.load(os.path.join(self.source_sound_dir, self._current_sound),
                                           sr=self.config.AUDIO.RIR_SAMPLING_RATE)
+            if audio_data.shape[0]//self.config.AUDIO.RIR_SAMPLING_RATE == 1:
+                audio_data = np.concatenate([audio_data] * 3, axis=0)  # duplicate to be longer than longest RIR
             self._source_sound_dict[self._current_sound] = audio_data
         self._audio_length = self._source_sound_dict[self._current_sound].shape[0]//self.config.AUDIO.RIR_SAMPLING_RATE
 

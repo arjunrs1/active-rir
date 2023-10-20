@@ -29,7 +29,7 @@ from habitat import logger, Config
 from habitat.utils.visualizations.utils import observations_to_image
 from rir_rendering.common.base_trainer import BaseRLTrainer
 from rir_rendering.common.baseline_registry import baseline_registry
-from rir_rendering.common.env_utils import construct_envs
+from ss_baselines.common.env_utils import construct_envs
 from rir_rendering.common.environments import get_env_class
 from ss_baselines.common.rollout_storage import RolloutStorage
 from ss_baselines.common.tensorboard_utils import TensorboardWriter
@@ -79,6 +79,11 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         self._static_smt_encoder = False
         self._encoder = None
+
+        if self.config.RL.USE_EARLY_ANNEALING:
+            self.early_sampling_penalty = 10.0
+            self.penalty_annealing_steps = int(self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS * self.config.RL.EARLY_ANNEALING_FRAC)
+            self.num_updates = 0
     
     def get_novelty_reward(self, env_index, curr_obs):
         if curr_obs is not None:
@@ -93,7 +98,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         else:
             return 0
 
-    def get_reward(self, prev_observations, env_index, curr_obs=None, use_sparse_reward=False):
+    def get_reward(self, prev_observations, env_index, curr_obs=None, use_sparse_reward=False, episode_step=None, action=None):
         reward = 0
 
         if len(prev_observations) == 20:
@@ -127,6 +132,13 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 reward += -self.config.RL.SPARSE_RIR_REWARD_SCALE * next_rir_error
 
             self._curr_rir_error[env_index] = next_rir_error
+
+        if self.config.RL.USE_EARLY_ANNEALING and episode_step < self.penalty_annealing_steps:
+                initial_penalty = self.early_sampling_penalty * (1-self.num_updates/self.config.NUM_UPDATES)
+                current_penalty = initial_penalty - initial_penalty * (episode_step / self.penalty_annealing_steps)
+                if action == 3 or action == 4 or action == 5:
+                    reward -= current_penalty
+                current_penalty = None
 
         return reward
     
@@ -337,13 +349,18 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
                 rewards[i] = 0.0
             else:
-                observations[i]['depth'] = observations[i]['depth'].squeeze(-1)
-                #TO DO: make it relative to first obs
-                #if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
-                if (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
-                    context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
-                    self.context_observations[i].append(context_obs)
-                rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i], use_sparse_reward=(len(self.context_observations[i])==self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-1))
+                observations[i]['depth'] = observations[i]['depth'].squeeze(-1) if len(observations[i]['depth'].shape) == 4 else observations[i]['depth']
+                if self.config.UNIFORM_SAMPLE:
+                    if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
+                        context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
+                        self.context_observations[i].append(context_obs)
+                else:
+                    if (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
+                        context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
+                        self.context_observations[i].append(context_obs)
+                rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i],
+                                             use_sparse_reward=(len(self.context_observations[i])==self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-1),
+                                             episode_step=current_episode_step[i].item(), action=actions[i][0].item())
 
         logging.debug('Reward: {}'.format(rewards[0]))
 
@@ -514,6 +531,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             self.config.TENSORBOARD_DIR, flush_secs=self.flush_secs
         ) as writer:
             for update in range(self.config.NUM_UPDATES):
+                self.num_updates += 1
                 if ppo_cfg.use_linear_lr_decay:
                     lr_scheduler.step()
 
@@ -638,7 +656,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
     
     def initialize_queries_gt_rirs_and_observations(self, initial_observations, i, reset_context=True):
         observations, query_positions, gt_rirs_mags, gt_rirs_phases, ref_pose = initial_observations
-        observations['depth'] = observations['depth'].squeeze(-1)
+        if len(observations['depth'].shape) == 4:
+            observations['depth'] = observations['depth'].squeeze(-1)
         self.query_positions[i] = list(query_positions)
         self.gt_rirs_mag[i] = torch.tensor(gt_rirs_mags)
         self.gt_rirs_phase[i] = torch.tensor(gt_rirs_phases)
