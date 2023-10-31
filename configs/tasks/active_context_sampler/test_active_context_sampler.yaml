@@ -73,8 +73,8 @@ TASK:
     TYPE: "BinSpectMagSensor"
   POSE_SENSOR:
     FEATURE_SHAPE: [5]
-    TYPE: "RelativePoseSensor"    
-  MEASUREMENTS: [] #"ACOUSTIC_MAP_ERROR"
+    TYPE: "ActivePoseSensor"    
+  MEASUREMENTS: [] 
   GOAL_SENSOR_UUID: spect_mag
   ACTIONS:
     PAUSE:

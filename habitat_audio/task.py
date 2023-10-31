@@ -190,7 +190,7 @@ class ActivePoseSensor(Sensor):
         )
 
         return np.array(
-            [-agent_position_xyz[2], agent_position_xyz[0], agent_heading[0],],
+            [-agent_position_xyz[2], agent_position_xyz[0], -agent_position_xyz[2], agent_position_xyz[0], agent_heading[0],],
             dtype=np.float32
         )
     

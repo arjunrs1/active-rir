@@ -1239,21 +1239,33 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
     def compute_RIR(self, query_location):
         receiver_location, source_location, azimuth_angle = query_location
         sampling_rate = self.config_yaml.AUDIO.RIR_SAMPLING_RATE
-        if self.config_yaml.USE_RENDERED_OBSERVATIONS:
-            binaural_rir_file = os.path.join(self.binaural_rir_dir, str(azimuth_angle), '{}_{}.wav'.format(
-                receiver_location, source_location))
-            try:
-                sampling_freq, binaural_rir = wavfile.read(binaural_rir_file)  # float32
-            except ValueError:
-                logging.warning("{} file is not readable".format(binaural_rir_file))
-                binaural_rir = np.zeros((sampling_rate, 2)).astype(np.float32)
-                sampling_freq = sampling_rate
-            if len(binaural_rir) == 0:
-                logging.debug("Empty RIR file at {}".format(binaural_rir_file))
-                binaural_rir = np.zeros((sampling_rate, 2)).astype(np.float32)
-                sampling_freq = sampling_rate
-        else:
-            binaural_rir = np.transpose(np.array(self._sim.get_sensor_observations()["audio_sensor"]))
+        #TODO: Fix this so that we are using SS 2.0 query RIRs (treat setting audio source/receiver transform carefully)
+        #if self.config_yaml.USE_RENDERED_OBSERVATIONS:
+        binaural_rir_file = os.path.join(self.binaural_rir_dir, str(azimuth_angle), '{}_{}.wav'.format(
+            receiver_location, source_location))
+        try:
+            sampling_freq, binaural_rir = wavfile.read(binaural_rir_file)  # float32
+        except ValueError:
+            logging.warning("{} file is not readable".format(binaural_rir_file))
+            binaural_rir = np.zeros((sampling_rate, 2)).astype(np.float32)
+            sampling_freq = sampling_rate
+        if len(binaural_rir) == 0:
+            logging.debug("Empty RIR file at {}".format(binaural_rir_file))
+            binaural_rir = np.zeros((sampling_rate, 2)).astype(np.float32)
+            sampling_freq = sampling_rate
+        #else:
+            #NOTE: If you generate continuous sim query RIRs, then make sure to reset listener and source transform in reconfigure AFTER computing query RIRs.
+            """ rec_pos = list(self.graph.nodes[receiver_location]['point'])
+            rot = quat_from_angle_axis(np.deg2rad(self._compute_rotation_from_azimuth(azimuth_angle)),
+                                                    np.array([0, 1, 0]))
+            src_pos = list(self.graph.nodes[source_location]['point'])
+            audio_sensor = self._sim.get_agent(0)._sensors["audio_sensor"]
+            audio_sensor.setAudioSourceTransform(np.array(src_pos) + np.array([0, 1.5, 0]))
+            audio_sensor.setAudioListenerTransform(
+                        np.array(rec_pos),
+                        np.array([rot.w, rot.x, rot.y, rot.z]))
+            """
+            #binaural_rir = np.transpose(np.array(self._sim.get_sensor_observations()["audio_sensor"]))
 
         binaural_rir_full_length = np.zeros((sampling_rate, 2))
         if binaural_rir.shape[0] > 128:
@@ -1292,18 +1304,25 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         :param receiver_node: pose receiver node
         :return: spect.
         """
-        rir_az_dir = os.path.join(self.binaural_rir_dir, str(self.azimuth_angle))
-        src_rec_dir = '{}_{}.wav'.format(self._receiver_position_index, self._receiver_position_index)
-        binaural_rir_file = os.path.join(rir_az_dir, src_rec_dir)
+        if self.config.USE_RENDERED_OBSERVATIONS:
+            rir_az_dir = os.path.join(self.binaural_rir_dir, str(self.azimuth_angle))
+            src_rec_dir = '{}_{}.wav'.format(self._receiver_position_index, self._receiver_position_index)
+            binaural_rir_file = os.path.join(rir_az_dir, src_rec_dir)
 
-        assert os.path.isfile(binaural_rir_file)
+            assert os.path.isfile(binaural_rir_file)
 
-        try:
-            fs_imp, sig_imp = wavfile.read(binaural_rir_file)
+            try:
+                fs_imp, sig_imp = wavfile.read(binaural_rir_file)
 
-            assert fs_imp == self.config_yaml.AUDIO.RIR_SAMPLING_RATE, "RIR doesn't have sampling frequency of rir_sampling_rate"
-        except ValueError:
-            sig_imp = np.zeros((self.config_yaml.AUDIO.RIR_SAMPLING_RATE, 2)).astype("float32")
+                assert fs_imp == self.config_yaml.AUDIO.RIR_SAMPLING_RATE, "RIR doesn't have sampling frequency of rir_sampling_rate"
+            except ValueError:
+                sig_imp = np.zeros((self.config_yaml.AUDIO.RIR_SAMPLING_RATE, 2)).astype("float32")
+                fs_imp = self.config_yaml.AUDIO.RIR_SAMPLING_RATE
+        else:
+            current_state = self.get_agent_state()
+            audio_sensor = self._sim.get_agent(0)._sensors["audio_sensor"]
+            audio_sensor.setAudioSourceTransform(np.array(current_state.position) + np.array([0, 1.5, 0]))
+            sig_imp = np.transpose(np.array(self._sim.get_sensor_observations()["audio_sensor"]))
             fs_imp = self.config_yaml.AUDIO.RIR_SAMPLING_RATE
 
         if len(sig_imp) == 0:
@@ -1633,29 +1652,10 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         self._egomap_cache[self._current_scene][(self._receiver_position_index, self._rotation_angle)] = egomap
 
     def get_current_audiogoal_observation(self):
-        if self.config.AUDIO.HAS_DISTRACTOR_SOUND:
-            # by default, does not cache for distractor sound
-            audiogoal = self._compute_audiogoal()
-        else:
-            joint_index = (self._source_position_index, self._receiver_position_index, self.azimuth_angle)
-            if joint_index not in self._audiogoal_cache:
-                self._audiogoal_cache[joint_index] = self._compute_audiogoal()
-            audiogoal = self._audiogoal_cache[joint_index]
-
-        return audiogoal
+        return self._compute_audiogoal()
 
     def get_current_spectrogram_observation(self, audiogoal2spectrogram):
-        if self.config.AUDIO.HAS_DISTRACTOR_SOUND:
-            audiogoal = self.get_current_audiogoal_observation()
-            spectrogram = audiogoal2spectrogram(audiogoal)
-        else:
-            joint_index = (self._source_position_index, self._receiver_position_index, self.azimuth_angle)
-            if joint_index not in self._spectrogram_cache:
-                audiogoal = self.get_current_audiogoal_observation()
-                self._spectrogram_cache[joint_index] = audiogoal2spectrogram(audiogoal)
-            spectrogram = self._spectrogram_cache[joint_index]
-
-        return spectrogram
+        return audiogoal2spectrogram(self.get_current_audiogoal_observation())
 
     def geodesic_distance(self, position_a, position_bs, episode=None):
         distances = []

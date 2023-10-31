@@ -1,6 +1,7 @@
 import copy
 import os
 import pickle
+import random
 import math
 from tqdm import tqdm
 import numpy as np
@@ -529,6 +530,13 @@ class UniformContextSamplerDataset(Dataset):
                     return index
         return -1  # Return -1 if the nth occurrence is not found in the list
 
+    def choose_random_occ(self, scene_name, subg_index):
+        occ_list = []
+        for index, string in enumerate(self.arbitrary_rir_scene_names_from_disk):
+            if string == scene_name and subg_index == int(self.arbitrary_rir_query_pose_subgraph_idxs_from_disk[index]):
+                occ_list.append(index)
+        return random.choice(occ_list)  # Return random index with desired scene
+
     def get_context(self, datapoint_scene, count_index=0, first_obs=None):
         """
         get datapoint given datapoint index (datapoint matters only for eval)
@@ -627,7 +635,7 @@ class UniformContextSamplerDataset(Dataset):
                                                                self._echo_feat_shape[2])).astype("float32")
 
         assert len(context_poses) >= 1, "can't compute relative query pose if there isn't at least 1 valid entry in context"
-        ref_pose_for_computing_rel_pose = context_poses[0] #if first_obs is None else first_obs
+        ref_pose_for_computing_rel_pose = context_poses[0] if first_obs is None else first_obs
 
         for context_idx in range(self.max_context_length):
             if context_idx < len(context_poses):
@@ -718,6 +726,85 @@ class UniformContextSamplerDataset(Dataset):
             #    datapoint["query"]["scene_srAzs"] = query_scene_srAz_this_datapoint
 
         return datapoint
+    
+    def get_query_rirs(self, datapoint_scene, subgraph_index, reference_pose):
+        """
+        get datapoint given datapoint index (datapoint matters only for eval)
+        :param item_: datapoint index
+        :return: datapoint
+        """
+        item_ = self.choose_random_occ(datapoint_scene, subgraph_index)
+        #assert item_ < len(self.arbitrary_rir_query_pose_subgraph_idxs_from_disk)
+        #datapoint_subgraph_idx = int(self.arbitrary_rir_query_pose_subgraph_idxs_from_disk[item_])
+        datapoint_subgraph_idx = subgraph_index
+
+        assert datapoint_scene in self._arr_echo_poses_per_scene
+        assert datapoint_subgraph_idx is not None
+        assert datapoint_subgraph_idx in self._arr_echo_poses_per_scene[datapoint_scene]
+        self._arr_echo_poses_per_scene[datapoint_scene][datapoint_subgraph_idx] =\
+            np.array(self._arr_echo_poses_per_scene[datapoint_scene][datapoint_subgraph_idx])
+
+        assert datapoint_scene in self._arr_query_poses_per_scene
+        assert datapoint_subgraph_idx is not None
+        assert datapoint_subgraph_idx in self._arr_query_poses_per_scene[datapoint_scene]
+        self._arr_query_poses_per_scene[datapoint_scene][datapoint_subgraph_idx] =\
+            np.array(self._arr_query_poses_per_scene[datapoint_scene][datapoint_subgraph_idx])
+
+        assert item_ < len(self.arbitrary_rir_query_pose_idxs_from_disk)
+        query_pose_idxs = self.arbitrary_rir_query_pose_idxs_from_disk[item_][:self.max_query_length]
+        assert isinstance(query_pose_idxs, list)
+
+        query_poses = self._arr_query_poses_per_scene[datapoint_scene][datapoint_subgraph_idx][query_pose_idxs, :].tolist()
+        
+        view_sensor_height = None
+        view_sensor_width = None
+        view_sensor_nChannels = None
+        assert len(self.config.SENSORS) == 2
+        if self.config.SENSORS in [["RGB_SENSOR", "DEPTH_SENSOR"], ["DEPTH_SENSOR", "RGB_SENSOR"]]:
+            assert self.sim_cfg.RGB_SENSOR.HEIGHT == self.sim_cfg.DEPTH_SENSOR.HEIGHT
+            view_sensor_height = self.sim_cfg.RGB_SENSOR.HEIGHT
+
+            assert self.sim_cfg.RGB_SENSOR.WIDTH == self.sim_cfg.DEPTH_SENSOR.WIDTH
+            view_sensor_width = self.sim_cfg.RGB_SENSOR.WIDTH
+
+            view_sensor_nChannels = 4
+        else:
+            raise ValueError
+
+        assert self._pose_feat_shape[0] == 5
+        query_poses_this_datapoint = np.zeros((self.max_query_length, 5)).astype("float32")
+        assert self._echo_feat_shape is not None
+        
+        gt_queryImpEchoes_mag_this_datapoint = np.zeros((self.max_query_length,
+                                                         self._echo_feat_shape[0],
+                                                         self._echo_feat_shape[1],
+                                                         self._echo_feat_shape[2])).astype("float32")
+        gt_queryImpEchoes_phase_this_datapoint = np.zeros((self.max_query_length,
+                                                            self._echo_feat_shape[0],
+                                                            self._echo_feat_shape[1],
+                                                            self._echo_feat_shape[2])).astype("float32")
+
+        ref_pose_for_computing_rel_pose = reference_pose
+
+        for query_idx in range(self.max_query_length):
+            if query_idx < len(query_poses):
+                curr_query_entry_gtImpEcho_mag, curr_query_entry_gtImpEcho_phase =\
+                    self._compute_spect(scene=datapoint_scene,
+                                        azimuth=int(query_poses[query_idx][2]),
+                                        receiver_node=int(query_poses[query_idx][0]),
+                                        source_node=int(query_poses[query_idx][1]),
+                                        )
+                gt_queryImpEchoes_mag_this_datapoint[query_idx] = curr_query_entry_gtImpEcho_mag
+                gt_queryImpEchoes_phase_this_datapoint[query_idx] = curr_query_entry_gtImpEcho_phase
+
+                curr_query_entry_pose =\
+                    np.array(self._compute_relative_pose(current_pose=query_poses[query_idx],
+                                                         ref_pose=ref_pose_for_computing_rel_pose,
+                                                         scene_graph=self._all_scenes_graphs_this_split[datapoint_scene],
+                                                         )).astype("float32")
+                query_poses_this_datapoint[query_idx] = curr_query_entry_pose
+
+        return query_poses_this_datapoint, gt_queryImpEchoes_mag_this_datapoint, gt_queryImpEchoes_phase_this_datapoint
 
     def _normalize_depth(self, depth):
         """

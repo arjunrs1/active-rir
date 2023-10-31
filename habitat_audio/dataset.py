@@ -3,6 +3,7 @@ import gzip
 import json
 import os
 import logging
+import random
 from typing import List, Optional, Dict
 
 from habitat.config import Config
@@ -173,7 +174,17 @@ class ExplorationDataset(Dataset):
             self.content_scenes_path = deserialized[CONTENT_SCENES_PATH_FIELD]
 
         episode_cnt = 0
-        for episode in deserialized["episodes"]:
+        all_scene_eps = deserialized["episodes"]
+        if "train" in self._config.SPLIT:
+            max_eps = 5000
+        elif "val" in self._config.SPLIT:
+            max_eps = 20
+        else:
+            max_eps = 50
+        random.shuffle(all_scene_eps)
+        all_scene_eps = all_scene_eps[:max_eps]
+
+        for episode in all_scene_eps:
             episode = ExplorationEpisode(**episode)
             # a temporal workaround to set scene_dataset_config attribute
             episode.scene_dataset_config = self._config.SCENES_DIR.split('/')[-1]

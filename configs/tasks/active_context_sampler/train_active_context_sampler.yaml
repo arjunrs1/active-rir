@@ -69,7 +69,10 @@ TASK:
     TYPE: "BinSpectMagSensor"
   POSE_SENSOR:
     FEATURE_SHAPE: [5]
-    TYPE: "RelativePoseSensor"    
+    TYPE: "ActivePoseSensor"
+  EGO_MAP_SENSOR:
+    FEATURE_SHAPE: [31, 31, 2]
+    TYPE: "GTEgoMap"
   MEASUREMENTS: [] #"ACOUSTIC_MAP_ERROR"
   GOAL_SENSOR_UUID: spect_mag
   ACTIONS:

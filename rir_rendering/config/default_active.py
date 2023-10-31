@@ -81,6 +81,8 @@ _C.RL.TIME_DIFF = False
 _C.RL.USE_EARLY_ANNEALING = False
 _C.RL.EARLY_ANNEALING_FRAC = 0.2
 _C.RL.USE_COOLDOWN_ANNEALING = False
+_C.RL.SAMPLING_COOLDOWN_PERIOD = 30
+_C.RL.NOVELTY_GRID_FACTOR = 5
 _C.RL.PRETRAINED_RIR_PREDICTOR_PATH = "/vision/asomaya1/active-rir/runs_eval/fs_rir/data/seen_eval_best_ckpt.pth"
 # -----------------------------------------------------------------------------
 # PROXIMAL POLICY OPTIMIZATION (PPO)
@@ -290,6 +292,14 @@ _TC.SIMULATOR.AUDIO.CROSSFADE = False
 _TC.TASK.ACOUSTIC_MAP_ERROR = CN()
 _TC.TASK.ACOUSTIC_MAP_ERROR.TYPE = "AcousticMapError"
 # -----------------------------------------------------------------------------
+# EgoMap Sensor
+# -----------------------------------------------------------------------------
+_TC.TASK.EGOMAP_SENSOR = SIMULATOR_SENSOR.clone()
+_TC.TASK.EGOMAP_SENSOR.TYPE = "EgoMap"
+_TC.TASK.EGOMAP_SENSOR.MAP_SIZE = 31
+_TC.TASK.EGOMAP_SENSOR.MAP_RESOLUTION = 0.1
+_TC.TASK.EGOMAP_SENSOR.HEIGHT_THRESH = (0.5, 2.0)
+# -----------------------------------------------------------------------------
 # Dataset extension
 # -----------------------------------------------------------------------------
 _TC.DATASET.VERSION = 'v1'
@@ -368,7 +378,7 @@ def get_config(
 	## setting SIMULATOR'S USE_SYNC_VECENV flag
 	config.TASK_CONFIG.SIMULATOR.USE_SYNC_VECENV = config.USE_SYNC_VECENV
 	if config.CONTINUOUS:
-		config.TASK_CONFIG.SIMULATOR.FORWARD_STEP_SIZE = 0.25
+		config.TASK_CONFIG.SIMULATOR.FORWARD_STEP_SIZE = 1.0
 		config.TASK_CONFIG.SIMULATOR.USE_RENDERED_OBSERVATIONS = False
 		config.TASK_CONFIG.SIMULATOR.STEP_TIME = 0.25
 		config.TASK_CONFIG.SIMULATOR.AUDIO.CROSSFADE = True

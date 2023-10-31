@@ -813,7 +813,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     mask_size = min(20, len(self.context_observations[i]))
                     episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
                     if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
-                        self.pref_ref_pose = self.ref_pose
+                        self.prev_ref_pose = self.ref_pose
                     observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i, reset_context=False)
                     rewards[i] = 0.0
                 else:
@@ -897,10 +897,10 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             obs = self.get_fs_rir_obs(current_episodes[i].scene_id, len(stats_episodes))
                             obs = {key: val.unsqueeze(0) for key, val in obs.items()}                    
                             fs_mask = torch.zeros(obs['context_mask'].shape)
-                            #query_poses = torch.unsqueeze(torch.tensor(self.query_positions[i]),0)
-                            #query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
-                            #obs['query_poses'] = query_poses
-                            #obs['query_mask'] = query_mask
+                            query_poses = torch.unsqueeze(torch.tensor(self.query_positions[i]),0)
+                            query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
+                            obs['query_poses'] = query_poses
+                            obs['query_mask'] = query_mask
                             for n in range(len(self.context_observations[i])):
                                 fs_mask[0,n] = 1
                                 obs['context_mask'] = fs_mask
@@ -1000,10 +1000,11 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 json.dump(self.intermediate_fs_rir_errors, json_file, indent=4)
             print("done")
 
-        stats_file = os.path.join(config.TENSORBOARD_DIR, '{}_stats_{}.json'.format(config.EVAL.SPLIT, config.SEED))
-        new_stats_episodes = {','.join(key): value for key, value in stats_episodes.items()}
-        with open(stats_file, 'w') as fo:
-            json.dump(new_stats_episodes, fo, indent=4)
+        if not (self.config.SAVE_INTERMEDIATE_RIR_ERRORS or self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS):
+            stats_file = os.path.join(config.TENSORBOARD_DIR, '{}_stats_{}.json'.format(config.EVAL.SPLIT, config.SEED))
+            new_stats_episodes = {','.join(key): value for key, value in stats_episodes.items()}
+            with open(stats_file, 'w') as fo:
+                json.dump(new_stats_episodes, fo, indent=4)
 
         episode_metrics_mean = {}
         for metric in aggregated_stats.keys():
@@ -1095,7 +1096,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 eval_mode=True,
                 ckpt_rootdir_path=self.config.MODEL_DIR,
             )
-        context = dataset.get_context(scene, count_index=(index % self.scene_count[scene]) + 1)#, self.pref_ref_pose)
+        context = dataset.get_context(scene, count_index=(index % self.scene_count[scene]) + 1, first_obs=self.prev_ref_pose)
 
         return context
 

@@ -214,7 +214,10 @@ class ContextEncoderNet(Net):
         else:
             raise ValueError
         
-        audio_context_feats = self.audio_context_enc({"audio_spect": bin_spect_mag})
+        #zero out audio modality for policy
+        bin_spect_mag_blind = torch.zeros_like(bin_spect_mag)
+
+        audio_context_feats = self.audio_context_enc({"audio_spect": bin_spect_mag_blind})
         context_feats.append(audio_context_feats)
 
         pose_context_feats = self.pose_context_enc({"positional_obs": pose})

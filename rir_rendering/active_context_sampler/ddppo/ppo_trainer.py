@@ -79,15 +79,20 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         self._static_smt_encoder = False
         self._encoder = None
+        self.num_updates = 0
 
         if self.config.RL.USE_EARLY_ANNEALING:
-            self.early_sampling_penalty = 10.0
+            self.early_sampling_penalty = 4.0
             self.penalty_annealing_steps = int(self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS * self.config.RL.EARLY_ANNEALING_FRAC)
-            self.num_updates = 0
+
+        if self.config.RL.USE_COOLDOWN_ANNEALING:
+            self.cooldown_penalty = 4
+            self.cooldown_timer = 0
     
     def get_novelty_reward(self, env_index, curr_obs):
         if curr_obs is not None:
             pose = tuple(curr_obs['pose'])[:2]
+            pose = (pose[0]//self.config.RL.NOVELTY_GRID_FACTOR, pose[1]//self.config.RL.NOVELTY_GRID_FACTOR)
             if pose in self.novelty_count[env_index].keys():
                 novelty_reward = 1/math.sqrt(self.novelty_count[env_index][pose])
                 self.novelty_count[env_index][pose] += 1.0
@@ -134,11 +139,23 @@ class ActiveRIRTrainer(BaseRLTrainer):
             self._curr_rir_error[env_index] = next_rir_error
 
         if self.config.RL.USE_EARLY_ANNEALING and episode_step < self.penalty_annealing_steps:
-                initial_penalty = self.early_sampling_penalty * (1-self.num_updates/self.config.NUM_UPDATES)
-                current_penalty = initial_penalty - initial_penalty * (episode_step / self.penalty_annealing_steps)
-                if action == 3 or action == 4 or action == 5:
-                    reward -= current_penalty
-                current_penalty = None
+            initial_penalty = self.early_sampling_penalty #removed temporal annealing: * (1-self.num_updates/self.config.NUM_UPDATES)
+            current_penalty = initial_penalty #removed spatial annealing: - initial_penalty * (episode_step / self.penalty_annealing_steps)
+            if action == 3 or action == 4 or action == 5:
+                reward -= current_penalty
+            current_penalty = None
+            
+        if self.config.RL.USE_COOLDOWN_ANNEALING:
+            #removed temporal annealing: current_cooldown_window = max(10,int(self.config.RL.SAMPLING_COOLDOWN_PERIOD*(1-(self.num_updates/self.config.NUM_UPDATES))))
+            current_cooldown_window = self.config.RL.SAMPLING_COOLDOWN_PERIOD
+            if action == 3 or action == 4 or action == 5:
+                if self.cooldown_timer > 0:
+                    reward -= self.cooldown_penalty
+
+                #reset the cooldown timer  
+                self.cooldown_timer = current_cooldown_window
+            else:
+                self.cooldown_timer = max(0, self.cooldown_timer - 1)
 
         return reward
     
@@ -580,7 +597,10 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     )
                     for k, v in stats if k != "rir_error"
                 }
-                deltas["rir_error"] = (window_episode_rir_error[0] - window_episode_rir_error[-1]).sum().item() if len(window_episode_rir_error) > 1 else window_episode_rir_error[0].sum().item()
+                episode_errors_window = list(window_episode_rir_error)
+                deltas["rir_error"] = torch.mean(torch.abs(torch.stack(episode_errors_window)), dim=0).item()
+
+                #deltas["rir_error"] = (window_episode_rir_error[0] - window_episode_rir_error[-1]).sum().item() if len(window_episode_rir_error) > 1 else window_episode_rir_error[0].sum().item()
                 deltas["count"] = max(deltas["count"], 1.0)
 
                 # this reward is averaged over all the episodes happened during window_size updates

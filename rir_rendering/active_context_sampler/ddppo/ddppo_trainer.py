@@ -17,6 +17,7 @@ import json
 import random
 import math
 import pickle
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -80,7 +81,12 @@ class DDPPOTrainer(ActiveRIRTrainer):
         Returns:
             None
         """
-        logger.add_filehandler(self.config.LOG_FILE)
+        log_file = self.config.LOG_FILE.split(".log")[0] + "_process_" + str(self.local_rank) + ".log"
+        if not os.path.exists(log_file):
+            path = Path(log_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        logger.add_filehandler(log_file)
 
         # Setup heuristic stop criterion if applicable
         action_space = self.envs.action_spaces[0]
