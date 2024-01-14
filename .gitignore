@@ -4,4 +4,6 @@ data
 __pycache__
 runs
 runs_eval
+*.txt
+*.pkl
 
