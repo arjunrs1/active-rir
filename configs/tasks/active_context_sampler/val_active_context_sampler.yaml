@@ -16,13 +16,14 @@ ENVIRONMENT:
   ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/unseenEnv_eval_364datapoints_sceneNames.pkl"
 
 SIMULATOR:
+  SPLIT: "unseen_eval"
   USE_RENDERED_OBSERVATIONS: False
   AGENT_0:
     HEIGHT: 1.5
     RADIUS: 0.1
     SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"]
     IS_SET_START_STATE: False
-    START_POSITION: [0, 0, 0] #change this - used in reconfigure to set start pos/orientation, but episode has this info
+    START_POSITION: [0, 0, 0]
     START_ROTATION: [0, 0, 0, 1]
   AGENTS: ["AGENT_0"]
   TYPE: "SoundSpacesSimActiveRIR"
@@ -58,7 +59,7 @@ SIMULATOR:
 
 TASK:
   TYPE: Exploration
-  SENSORS: ['BIN_SPECT_MAG_SENSOR', 'POSE_SENSOR']
+  SENSORS: ['BIN_SPECT_MAG_SENSOR', 'POSE_SENSOR', 'EGOMAP_SENSOR', 'GLOBALMAP_SENSOR']
   RGB_SENSOR:
     WIDTH: 128
     HEIGHT: 128
@@ -73,7 +74,11 @@ TASK:
     TYPE: "BinSpectMagSensor"
   POSE_SENSOR:
     FEATURE_SHAPE: [5]
-    TYPE: "ActivePoseSensor"    
+    TYPE: "ActivePoseSensor"
+  EGOMAP_SENSOR:
+    TYPE: "EgoMap"
+  GLOBALMAP_SENSOR:
+    TYPE: "GlobalMap"      
   MEASUREMENTS: [] 
   GOAL_SENSOR_UUID: spect_mag
   ACTIONS:

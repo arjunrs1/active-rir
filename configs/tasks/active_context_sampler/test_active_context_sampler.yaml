@@ -1,7 +1,7 @@
 ENVIRONMENT:
   MAX_CONTEXT_LENGTH: 20  
   MAX_QUERY_LENGTH: 60
-  MAX_EPISODE_STEPS: 1500
+  MAX_EPISODE_STEPS: 200
 
   LOAD_QUERY_FOR_ARBITRARY_RIRS_FROM_DISK: True
   LOAD_CONTEXT_FROM_DISK: True
@@ -16,6 +16,7 @@ ENVIRONMENT:
   ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH: "data/eval_arbitraryRIRQuery_datasets/mp3d/allEnv_14DatapointsPerEnv/test/60_qry/unseenEnv_eval_364datapoints_sceneNames.pkl"
 
 SIMULATOR:
+  SPLIT: "unseen_eval"
   USE_RENDERED_OBSERVATIONS: False
   AGENT_0:
     HEIGHT: 1.5
@@ -58,7 +59,7 @@ SIMULATOR:
 
 TASK:
   TYPE: Exploration
-  SENSORS: ['BIN_SPECT_MAG_SENSOR', 'POSE_SENSOR']
+  SENSORS: ['BIN_SPECT_MAG_SENSOR', 'POSE_SENSOR', 'EGOMAP_SENSOR', 'GLOBALMAP_SENSOR']
   RGB_SENSOR:
     WIDTH: 128
     HEIGHT: 128
@@ -73,7 +74,11 @@ TASK:
     TYPE: "BinSpectMagSensor"
   POSE_SENSOR:
     FEATURE_SHAPE: [5]
-    TYPE: "ActivePoseSensor"    
+    TYPE: "ActivePoseSensor"
+  EGOMAP_SENSOR:
+    TYPE: "EgoMap"
+  GLOBALMAP_SENSOR:
+    TYPE: "GlobalMap"          
   MEASUREMENTS: [] 
   GOAL_SENSOR_UUID: spect_mag
   ACTIONS:

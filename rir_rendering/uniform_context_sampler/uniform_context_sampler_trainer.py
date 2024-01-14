@@ -169,7 +169,7 @@ class UniformContextSamplerTrainer(BaseRLTrainer):
         if not eval_mode:
             scene_splits["train"] = SCENE_SPLITS[sim_cfg.SCENE_DATASET]["train"]
         scene_splits["seen_eval"] = SCENE_SPLITS[sim_cfg.SCENE_DATASET]["train"]
-        scene_splits["unseen_eval"] = SCENE_SPLITS[sim_cfg.SCENE_DATASET]["unseen_eval"]
+        #scene_splits["unseen_eval"] = SCENE_SPLITS[sim_cfg.SCENE_DATASET]["unseen_eval"] #TODO: why is this commented?
 
         datasets = dict()
         dataloaders = dict()
@@ -198,7 +198,7 @@ class UniformContextSamplerTrainer(BaseRLTrainer):
                                             batch_size=uniform_context_sampler_cfg.batch_size,
                                             shuffle=(split == 'train'),
                                             pin_memory=True,
-                                            num_workers=uniform_context_sampler_cfg.num_workers,
+                                            num_workers=0,
                                             )
 
             dataset_sizes[split] = len(datasets[split])
@@ -509,76 +509,93 @@ class UniformContextSamplerTrainer(BaseRLTrainer):
                              "query_mask": query_mask,
                              "query_scene_idxs": query_scene_idxs,
                              }
+                obs_batch['context_mask'] = torch.zeros(obs_batch['context_mask'].shape, device=obs_batch['context_mask'].device)
+                for elem in range(20):
+                    obs_batch['context_mask'][:, elem] = 1  # Set the entire column to 1
 
-                with torch.no_grad():
-                    preds = self.actor_critic(obs_batch,)
+                    with torch.no_grad():
+                        preds = self.actor_critic(obs_batch,)
 
-                assert torch.all(query_mask == 1).item(),\
-                    "set config.TASK_CONFIG.ENVIRONMENT.MAX_QUERY_LENGTH to 1 for eval"
+                    assert torch.all(query_mask == 1).item(),\
+                        "set config.TASK_CONFIG.ENVIRONMENT.MAX_QUERY_LENGTH to 1 for eval"
 
-                assert len(query_scene_idxs.size()) == 2
-                assert len(query_scene_srAzs.size()) == 3
-                assert query_scene_idxs.size(0) == query_scene_srAzs.size(0)
+                    assert len(query_scene_idxs.size()) == 2
+                    assert len(query_scene_srAzs.size()) == 3
+                    assert query_scene_idxs.size(0) == query_scene_srAzs.size(0)
 
-                # query_scene_idxs: B x max_query_length ... same scene_idx across row
-                query_scene_idxs_for_metrics = query_scene_idxs.view(-1)
-                lst_query_scene_idxs_for_metrics = query_scene_idxs_for_metrics.detach().cpu().numpy().tolist()
+                    # query_scene_idxs: B x max_query_length ... same scene_idx across row
+                    query_scene_idxs_for_metrics = query_scene_idxs.view(-1)
+                    lst_query_scene_idxs_for_metrics = query_scene_idxs_for_metrics.detach().cpu().numpy().tolist()
 
-                query_scene_srAzs_for_metrics = query_scene_srAzs.view(-1, query_scene_srAzs.size(2))
-                lst_query_scene_srAzs_for_metrics = query_scene_srAzs_for_metrics.detach().cpu().numpy().tolist()
+                    query_scene_srAzs_for_metrics = query_scene_srAzs.view(-1, query_scene_srAzs.size(2))
+                    lst_query_scene_srAzs_for_metrics = query_scene_srAzs_for_metrics.detach().cpu().numpy().tolist()
 
-                assert len(lst_query_scene_srAzs_for_metrics) == len(lst_query_scene_idxs_for_metrics)
+                    assert len(lst_query_scene_srAzs_for_metrics) == len(lst_query_scene_idxs_for_metrics)
 
-                eval_scenes_this_batch = []
-                eval_srAzs_this_batch = []
-                for j, query_scene_idx in enumerate(lst_query_scene_idxs_for_metrics):
-                    assert query_scene_idx in SCENE_IDX_TO_NAME[config.TASK_CONFIG.SIMULATOR.SCENE_DATASET]
-                    eval_scenes_this_batch.append(SCENE_IDX_TO_NAME[config.TASK_CONFIG.SIMULATOR.SCENE_DATASET][query_scene_idx])
+                    eval_scenes_this_batch = []
+                    eval_srAzs_this_batch = []
+                    for j, query_scene_idx in enumerate(lst_query_scene_idxs_for_metrics):
+                        assert query_scene_idx in SCENE_IDX_TO_NAME[config.TASK_CONFIG.SIMULATOR.SCENE_DATASET]
+                        eval_scenes_this_batch.append(SCENE_IDX_TO_NAME[config.TASK_CONFIG.SIMULATOR.SCENE_DATASET][query_scene_idx])
 
-                    assert j < len(lst_query_scene_srAzs_for_metrics)
-                    eval_srAzs_this_batch.append(tuple(lst_query_scene_srAzs_for_metrics[j]))
+                        assert j < len(lst_query_scene_srAzs_for_metrics)
+                        eval_srAzs_this_batch.append(tuple(lst_query_scene_srAzs_for_metrics[j]))
 
-                # preds, gt_queryImpEchoes_mag: B x max_query_length x H x W x C
-                # query_mask: B x max_query_length
-                # view function called to flatten B x max_query_length -> (B * max_query_length)
-                if uniform_context_sampler_cfg.predict_in_logspace:
-                    if uniform_context_sampler_cfg.log_instead_of_log1p_in_logspace:
-                        pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]).detach())\
-                                         - uniform_context_sampler_cfg.log_gt_eps
+                    # preds, gt_queryImpEchoes_mag: B x max_query_length x H x W x C
+                    # query_mask: B x max_query_length
+                    # view function called to flatten B x max_query_length -> (B * max_query_length)
+                    if uniform_context_sampler_cfg.predict_in_logspace:
+                        if uniform_context_sampler_cfg.log_instead_of_log1p_in_logspace:
+                            pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]).detach())\
+                                            - uniform_context_sampler_cfg.log_gt_eps
+                        else:
+                            pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]).detach()) - 1
                     else:
-                        pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]).detach()) - 1
-                else:
-                    pred_spect_mag = preds.view(-1, *preds.size()[2:]).detach()
+                        pred_spect_mag = preds.view(-1, *preds.size()[2:]).detach()
 
-                eval_metrics_batch = compute_spect_metrics(
-                    metric_types=uniform_context_sampler_cfg.EvalMetrics.types,
-                    gt_spect_mag=gt_queryImpEchoes_mag.view(-1, *gt_queryImpEchoes_mag.size()[2:]),
-                    gt_spect_phase=gt_queryImpEchoes_phase.view(-1, *gt_queryImpEchoes_phase.size()[2:]),
-                    pred_spect_mag=pred_spect_mag,
-                    eval_mode=True,
-                    fs=config.TASK_CONFIG.SIMULATOR.AUDIO.RIR_SAMPLING_RATE,
-                    hop_length=config.TASK_CONFIG.SIMULATOR.AUDIO.HOP_LENGTH,
-                    n_fft=config.TASK_CONFIG.SIMULATOR.AUDIO.N_FFT,
-                    win_length=config.TASK_CONFIG.SIMULATOR.AUDIO.WIN_LENGTH,
-                    dump_audio_waveforms=uniform_context_sampler_cfg.dump_audio_waveforms,
-                    audio_waveforms_dump_dir=audio_waveforms_dump_dir,
-                    start_datapoint_idx_for_batch=(i * uniform_context_sampler_cfg.batch_size),
-                    eval_scenes_this_batch=eval_scenes_this_batch,
-                    eval_srAzs_this_batch=eval_srAzs_this_batch,
-                    use_gl=uniform_context_sampler_cfg.use_gl,
-                    use_gl_for_gt=uniform_context_sampler_cfg.use_gl_for_gt,
-                    use_rand_phase=uniform_context_sampler_cfg.use_rand_phase,
-                    use_rand_phase_for_gt=uniform_context_sampler_cfg.use_rand_phase_for_gt,
-                )
-                split_scene_names += eval_scenes_this_batch
 
-                for metric_type in all_metric_types:
-                    if metric_type not in eval_metrics:
-                        assert metric_type in eval_metrics_batch
+                    with open("fs_rir_context_obs_preds.pkl", "wb") as f:
+                        pickle.dump(preds, f)
+                    exit()
+
+                    eval_metrics_batch = compute_spect_metrics(
+                        metric_types=uniform_context_sampler_cfg.EvalMetrics.types,
+                        gt_spect_mag=gt_queryImpEchoes_mag.view(-1, *gt_queryImpEchoes_mag.size()[2:]),
+                        gt_spect_phase=gt_queryImpEchoes_phase.view(-1, *gt_queryImpEchoes_phase.size()[2:]),
+                        pred_spect_mag=pred_spect_mag,
+                        eval_mode=True,
+                        fs=config.TASK_CONFIG.SIMULATOR.AUDIO.RIR_SAMPLING_RATE,
+                        hop_length=config.TASK_CONFIG.SIMULATOR.AUDIO.HOP_LENGTH,
+                        n_fft=config.TASK_CONFIG.SIMULATOR.AUDIO.N_FFT,
+                        win_length=config.TASK_CONFIG.SIMULATOR.AUDIO.WIN_LENGTH,
+                        dump_audio_waveforms=uniform_context_sampler_cfg.dump_audio_waveforms,
+                        audio_waveforms_dump_dir=audio_waveforms_dump_dir,
+                        start_datapoint_idx_for_batch=(i * uniform_context_sampler_cfg.batch_size),
+                        eval_scenes_this_batch=eval_scenes_this_batch,
+                        eval_srAzs_this_batch=eval_srAzs_this_batch,
+                        use_gl=uniform_context_sampler_cfg.use_gl,
+                        use_gl_for_gt=uniform_context_sampler_cfg.use_gl_for_gt,
+                        use_rand_phase=uniform_context_sampler_cfg.use_rand_phase,
+                        use_rand_phase_for_gt=uniform_context_sampler_cfg.use_rand_phase_for_gt,
+                    )
+                    split_scene_names += eval_scenes_this_batch
+
+                    print("# obs:", elem+1)
+                    for metric_type in all_metric_types:
+                        #if metric_type not in eval_metrics:
+                        #    assert metric_type in eval_metrics_batch
                         eval_metrics[metric_type] = eval_metrics_batch[metric_type]
-                    else:
-                        eval_metrics[metric_type] += eval_metrics_batch[metric_type]
+                        print(metric_type)
+                        print(np.mean(eval_metrics[metric_type]))
 
+                    for metric_type in all_metric_types:
+                        if metric_type not in eval_metrics:
+                            assert metric_type in eval_metrics_batch
+                            eval_metrics[metric_type] = eval_metrics_batch[metric_type]
+                        else:
+                            eval_metrics[metric_type] += eval_metrics_batch[metric_type]
+
+                break
             for metric_type in all_metric_types:
                 writer.add_scalar('{}/{}/median'.format(metric_type, split),
                                   np.median(eval_metrics[metric_type]),

@@ -46,6 +46,7 @@ _C.EPS_SCENES_N_IDS = []
 _C.JOB_ID = 1
 _C.TRAIN_OR_EVAL_FOR_SPECIFIC_SCENE = False
 _C.SPECIFIC_SCENE_NAME = None
+_C.USE_VARIABLE_LENGTH_CONTEXT = False
 
 # -----------------------------------------------------------------------------
 # EVAL CONFIG

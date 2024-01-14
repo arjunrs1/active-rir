@@ -12,10 +12,10 @@ EVAL:
 UniformContextSampler:
   # dump_audio_waveforms: True
 
-  batch_size: 8
-  num_workers: 8
+  batch_size: 8 #TODO: change to 1 if necessary
+  num_workers: 8 #TODO: change to 1 if necessary 
 
-  num_datapoints_per_scene_eval: 14
+  num_datapoints_per_scene_eval: 14 #TODO: change to 1 if necessary 
 
   predict_in_logspace: True 
   log1p_gt: False

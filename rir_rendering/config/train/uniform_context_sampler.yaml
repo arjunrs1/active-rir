@@ -1,5 +1,6 @@
 BASE_TASK_CONFIG_PATH: "configs/tasks/uniform_context_sampler/train_uniform_context_sampler.yaml"
-SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"] 
+SENSORS: ["RGB_SENSOR", "DEPTH_SENSOR"]
+USE_VARIABLE_LENGTH_CONTEXT: True 
 
 TRAINER_NAME: "uniform_context_sampler"
 
@@ -12,7 +13,7 @@ UniformContextSampler:
   num_workers: 2
 
   num_datapoints_per_scene_train: 210
-  num_datapoints_per_scene_eval: 20 #CHANGE THIS BACK TO 14 IF IT DOESN'T WORK
+  num_datapoints_per_scene_eval: 14 #CHANGE THIS BACK TO 14 IF IT DOESN'T WORK
 
   lr: 1.0e-4 
   eps: 1.0e-5 

@@ -180,7 +180,7 @@ class ExplorationDataset(Dataset):
         elif "val" in self._config.SPLIT:
             max_eps = 20
         else:
-            max_eps = 50
+            max_eps = 5
         random.shuffle(all_scene_eps)
         all_scene_eps = all_scene_eps[:max_eps]
 

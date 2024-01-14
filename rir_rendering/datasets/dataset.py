@@ -12,6 +12,7 @@ import soundfile as sf
 from PIL import Image, ImageEnhance
 import cv2
 from skimage.measure import block_reduce
+import time
 
 import torch
 import torch.nn as nn
@@ -256,15 +257,12 @@ class UniformContextSamplerDataset(Dataset):
     def __getitem__(self, item):
         this_datapoint = self._get_datapoint(item)
 
-        #eval_context_pctg = (self.eval_context_percentages[item] if self._eval_mode
-        #                            else torch.FloatTensor(1).uniform_(0.05, 1).item())
-        eval_context_pctg = (1.0 if self._eval_mode
-                                    else torch.FloatTensor(1).uniform_(0.05, 1).item())
-        
         context_views_this_datapoint = torch.from_numpy(this_datapoint["context"]["views"])
         context_echoes_mag_this_datapoint = torch.from_numpy(this_datapoint["context"]["echoes_mag"])
         context_poses_this_datapoint = torch.from_numpy(this_datapoint["context"]["poses"])
-        context_mask_this_datapoint = self.variable_length_mask(eval_context_pctg)
+        context_mask_this_datapoint = torch.from_numpy(this_datapoint["context"]["mask"])
+        with open("fs_rir_context_obs.pkl", "wb") as f:
+            pickle.dump(this_datapoint, f)
 
         gt_queryImpEchoes_mag_this_datapoint = torch.from_numpy(this_datapoint["query"]["gt_impEchoes_mag"])
         if self._eval_mode:
@@ -431,6 +429,10 @@ class UniformContextSamplerDataset(Dataset):
 
         assert len(context_poses) >= 1, "can't compute relative query pose if there isn't at least 1 valid entry in context"
         ref_pose_for_computing_rel_pose = context_poses[0]
+        #context_poses = self.sort_poses_by_distance(context_poses, datapoint_scene)
+        if not self._eval_mode:
+            #vary context length during training only
+            context_poses = context_poses[:random.randint(1,self.max_context_length)]
 
         for context_idx in range(self.max_context_length):
             if context_idx < len(context_poses):
@@ -520,6 +522,38 @@ class UniformContextSamplerDataset(Dataset):
         if self._eval_mode:
             datapoint["query"]["scene_srAzs"] = query_scene_srAz_this_datapoint
         return datapoint
+    
+    def _compute_distance_from_reference(self, relative_pose):
+        # Assuming relative_pose is a numpy array or a list with at least two elements
+        # representing the x and y coordinates
+        ref_point = np.array([0, 0])  # Reference point (0,0) for simplicity
+        pose_point = np.array(relative_pose[:2])  # Extract x and y coordinates
+        distance = np.linalg.norm(pose_point - ref_point)
+        return distance
+    
+    def sort_poses_by_distance(self, poses, datapoint_scene):
+        if not poses or len(poses) < 2:
+            return poses  # No sorting needed if there's only one pose or none
+
+        ref_pose = poses[0]
+        distances = []
+
+        for context_idx in range(1, len(poses)):
+            current_context_pose = [poses[context_idx][0],
+                                        poses[context_idx][0],
+                                        poses[context_idx][1]]
+            relative_pose = self._compute_relative_pose(current_context_pose, ref_pose, self._all_scenes_graphs_this_split[datapoint_scene])
+            distance = self._compute_distance_from_reference(relative_pose)
+            distances.append((context_idx, distance))
+
+        # Sort indices based on distance
+        distances.sort(key=lambda x: x[1])
+        sorted_indices = [x[0] for x in distances]
+
+        # Arrange the poses in sorted order
+        sorted_poses = [ref_pose] + [poses[i] for i in sorted_indices]
+
+        return sorted_poses
     
     def find_nth_occurrence(self, lst, target_string, n):
         count = 0
@@ -829,13 +863,15 @@ class UniformContextSamplerDataset(Dataset):
         """
         assert isinstance(current_pose, list)
         assert isinstance(ref_pose, list)
-        assert len(ref_pose) == 2
         assert len(current_pose) == 3
         assert scene_graph is not None
 
-        ref_position_xyz = np.array(list(scene_graph.nodes[ref_pose[0]]["point"]), dtype=np.float32)
+        if not isinstance(ref_pose[0], list):
+            ref_position_xyz = np.array(list(scene_graph.nodes[ref_pose[0]]["point"]), dtype=np.float32)
+        else:
+            ref_position_xyz = np.array(list(ref_pose[0]), dtype=np.float32)
         rotation_world_ref = quat_from_angle_axis(np.deg2rad(self._compute_rotation_from_azimuth(ref_pose[1])),
-                                                  np.array([0, 1, 0]))
+                                                np.array([0, 1, 0]))
 
         agent_position_xyz = np.array(list(scene_graph.nodes[current_pose[0]]["point"]), dtype=np.float32)
         agent_position_xyz = quaternion_rotate_vector(
@@ -853,8 +889,8 @@ class UniformContextSamplerDataset(Dataset):
                                                   np.array([0, 0, -1]))
         agent_heading = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
 
-        return [-agent_position_xyz[2], agent_position_xyz[0], -audio_source_position_xyz[2],
-                audio_source_position_xyz[0], agent_heading]
+        return [round(-agent_position_xyz[2]), round(agent_position_xyz[0]), round(-audio_source_position_xyz[2]),
+                round(audio_source_position_xyz[0]), agent_heading]
 
     def _compute_spect(self, scene=None, azimuth=None, receiver_node=None, source_node=None,
                        is_context=False,):

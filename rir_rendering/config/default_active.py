@@ -72,6 +72,7 @@ _C.RL = CN()
 _C.RL.SUCCESS_REWARD = 10.0
 _C.RL.SLACK_REWARD = -0.01
 _C.RL.WITH_NOVELTY_REWARD = False
+_C.RL.WITH_COVERAGE_REWARD = False
 _C.RL.WITH_RIR_REWARD = False
 _C.RL.MEASUREMENT_RIR_REWARD_SCALE = 3000.0
 _C.RL.SPARSE_RIR_REWARD_SCALE = 1.0
@@ -121,6 +122,63 @@ _C.RL.DDPPO = CN()
 _C.RL.DDPPO.sync_frac = 0.6
 _C.RL.DDPPO.distrib_backend = "NCCL"
 _C.RL.DDPPO.reset_critic = True
+# -----------------------------------------------------------------------------
+# ACTIVE NEURAL SLAM (ANS)
+# -----------------------------------------------------------------------------
+_C.RL.ANS = CN()
+_C.RL.ANS.pyt_random_seed = 123
+_C.RL.ANS.planning_step = 0.50  # max distance of local goal from current position
+_C.RL.ANS.goal_success_radius = 0.2  # success threshold for reaching a goal
+_C.RL.ANS.goal_interval = 25  # goal sampling interval for global policy
+_C.RL.ANS.thresh_explored = 0.6  # threshold to classify a cell as explored
+_C.RL.ANS.thresh_obstacle = 0.6  # threshold to classify a cell as an obstacle
+_C.RL.ANS.overall_map_size = 900  # world map size M
+_C.RL.ANS.reward_type = "area_seen"  # Can be area_seen / map_accuracy
+_C.RL.ANS.local_slack_reward = -0.3
+_C.RL.ANS.local_collision_reward = -1.0
+_C.RL.ANS.stop_action_id = 3
+_C.RL.ANS.forward_action_id = 0
+_C.RL.ANS.left_action_id = 1
+_C.RL.ANS.image_scale_hw = [128, 128]
+_C.RL.ANS.model_path = ""
+_C.RL.ANS.recovery_heuristic = "random_explored_towards_goal"
+_C.RL.ANS.crop_map_for_planning = True
+# =============================================================================
+# Mapper
+# =============================================================================
+_C.RL.ANS.MAPPER = CN()
+_C.RL.ANS.MAPPER.lr = 1e-3
+_C.RL.ANS.MAPPER.eps = 1e-5
+_C.RL.ANS.MAPPER.max_grad_norm = 0.5
+_C.RL.ANS.MAPPER.num_mapper_steps = 100  # number of steps per mapper update
+_C.RL.ANS.MAPPER.map_size = 101  # V
+_C.RL.ANS.MAPPER.map_scale = 0.05  # s in meters
+_C.RL.ANS.MAPPER.projection_unit = "none"
+_C.RL.ANS.MAPPER.pose_loss_coef = 30.0
+_C.RL.ANS.MAPPER.detach_map = False
+_C.RL.ANS.MAPPER.registration_type = "moving_average"
+_C.RL.ANS.MAPPER.map_registration_momentum = 0.9
+_C.RL.ANS.MAPPER.thresh_explored = 0.6  # threshold to classify a cell as explored
+_C.RL.ANS.MAPPER.thresh_entropy = (
+    0.5  # entropy threshold to classify a cell as confident
+)
+_C.RL.ANS.MAPPER.freeze_projection_unit = False
+_C.RL.ANS.MAPPER.pose_predictor_inputs = ["ego_map"]
+_C.RL.ANS.MAPPER.n_pose_layers = 1
+_C.RL.ANS.MAPPER.n_ensemble_layers = 1
+_C.RL.ANS.MAPPER.ignore_pose_estimator = False
+_C.RL.ANS.MAPPER.label_id = "ego_map_gt_anticipated"
+_C.RL.ANS.MAPPER.use_data_parallel = False
+_C.RL.ANS.MAPPER.gpu_ids = []  # Set the GPUs for data parallel if necessary
+_C.RL.ANS.MAPPER.num_update_batches = 50
+_C.RL.ANS.MAPPER.replay_size = 100000
+_C.RL.ANS.MAPPER.map_batch_size = 400
+# Image normalization
+_C.RL.ANS.MAPPER.NORMALIZATION = CN()
+_C.RL.ANS.MAPPER.NORMALIZATION.img_mean = [0.485, 0.456, 0.406]
+_C.RL.ANS.MAPPER.NORMALIZATION.img_std = [0.229, 0.224, 0.225]
+# Image scaling
+_C.RL.ANS.MAPPER.image_scale_hw = [128, 128]
 # -----------------------------------------------------------------------------
 # Uniform context sampler
 # -----------------------------------------------------------------------------
@@ -254,6 +312,7 @@ _TC.SIMULATOR.UNIFORM_SAMPLE = False
 _TC.SIMULATOR.USE_RENDERED_OBSERVATIONS = True
 _TC.SIMULATOR.RENDERED_OBSERVATIONS = "data/scene_observations/"
 _TC.SIMULATOR.DEFAULT_AGENT_ID = 0
+_TC.SIMULATOR.SPLIT = _TC.DATASET.SPLIT
 # -----------------------------------------------------------------------------
 # audio config
 # -----------------------------------------------------------------------------
@@ -278,7 +337,7 @@ _TC.SIMULATOR.AUDIO.HAS_DISTRACTOR_SOUND = False
 # -----------------------------------------------------------------------------
 # soundspaces config
 # -----------------------------------------------------------------------------
-_TC.SIMULATOR.GRID_SIZE = 0.5
+_TC.SIMULATOR.GRID_SIZE = 1.0
 _TC.SIMULATOR.CONTINUOUS_VIEW_CHANGE = False
 _TC.SIMULATOR.VIEW_CHANGE_FPS = 10
 _TC.SIMULATOR.SCENE_OBSERVATION_DIR = 'data/scene_observations'
@@ -296,9 +355,15 @@ _TC.TASK.ACOUSTIC_MAP_ERROR.TYPE = "AcousticMapError"
 # -----------------------------------------------------------------------------
 _TC.TASK.EGOMAP_SENSOR = SIMULATOR_SENSOR.clone()
 _TC.TASK.EGOMAP_SENSOR.TYPE = "EgoMap"
-_TC.TASK.EGOMAP_SENSOR.MAP_SIZE = 31
+_TC.TASK.EGOMAP_SENSOR.MAP_SIZE = 101
 _TC.TASK.EGOMAP_SENSOR.MAP_RESOLUTION = 0.1
 _TC.TASK.EGOMAP_SENSOR.HEIGHT_THRESH = (0.5, 2.0)
+# -----------------------------------------------------------------------------
+# GlobalMap Sensor
+# -----------------------------------------------------------------------------
+_TC.TASK.GLOBALMAP_SENSOR = SIMULATOR_SENSOR.clone()
+_TC.TASK.GLOBALMAP_SENSOR.TYPE = "GlobalMap"
+_TC.TASK.GLOBALMAP_SENSOR.FEATURE_SHAPE = [2, 241, 241]
 # -----------------------------------------------------------------------------
 # Dataset extension
 # -----------------------------------------------------------------------------
@@ -375,10 +440,25 @@ def get_config(
 	config.TASK_CONFIG.defrost()
 
 	#------------------ modifying SIMULATOR cfg --------------------
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_TRAIN_QUERY_POSE_IDXS_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_TRAIN_QUERY_POSE_IDXS_PATH
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_TRAIN_QUERY_POSE_SUBGRAPH_IDXS_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_TRAIN_QUERY_POSE_SUBGRAPH_IDXS_PATH
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_TRAIN_SCENE_NAMES_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_TRAIN_SCENE_NAMES_PATH
+	config.TASK_CONFIG.SIMULATOR.SEEN_ENV_EVAL_CONTEXT_POSE_IDXS_PATH = config.TASK_CONFIG.ENVIRONMENT.SEEN_ENV_EVAL_CONTEXT_POSE_IDXS_PATH
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_SEEN_ENV_EVAL_SCENE_NAMES_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_SEEN_ENV_EVAL_SCENE_NAMES_PATH
+	config.TASK_CONFIG.SIMULATOR.UNSEEN_ENV_EVAL_CONTEXT_POSE_IDXS_PATH = config.TASK_CONFIG.ENVIRONMENT.UNSEEN_ENV_EVAL_CONTEXT_POSE_IDXS_PATH
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH
+	config.TASK_CONFIG.SIMULATOR.ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH = config.TASK_CONFIG.ENVIRONMENT.ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH
+	
+	config.TASK_CONFIG.SIMULATOR.MAX_QUERY_LENGTH = config.TASK_CONFIG.ENVIRONMENT.MAX_QUERY_LENGTH
+
 	## setting SIMULATOR'S USE_SYNC_VECENV flag
 	config.TASK_CONFIG.SIMULATOR.USE_SYNC_VECENV = config.USE_SYNC_VECENV
 	if config.CONTINUOUS:
-		config.TASK_CONFIG.SIMULATOR.FORWARD_STEP_SIZE = 1.0
+		config.TASK_CONFIG.SIMULATOR.FORWARD_STEP_SIZE = 1.0 #TODO: change to 0.25 if using truly continuous later on
+		config.TASK_CONFIG.SIMULATOR.TURN_ANGLE = 90 #TODO: change to 30 if using truly continuous later on
 		config.TASK_CONFIG.SIMULATOR.USE_RENDERED_OBSERVATIONS = False
 		config.TASK_CONFIG.SIMULATOR.STEP_TIME = 0.25
 		config.TASK_CONFIG.SIMULATOR.AUDIO.CROSSFADE = True

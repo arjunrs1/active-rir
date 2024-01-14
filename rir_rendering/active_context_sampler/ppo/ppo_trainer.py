@@ -6,15 +6,18 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import contextlib
 import os
+import cv2
+import random
 import time
 import logging
-from collections import deque, Counter
+from collections import defaultdict, deque, Counter
 from typing import Dict, List
 import json
-import random
 import math
 import pickle
+import h5py
 
 import numpy as np
 import torch
@@ -24,6 +27,7 @@ from tqdm import tqdm
 from numpy.linalg import norm
 from gym import spaces
 from collections import defaultdict
+from einops import rearrange, asnumpy
 
 from habitat import logger, Config
 from habitat.utils.visualizations.utils import observations_to_image
@@ -44,7 +48,15 @@ from rir_rendering.active_context_sampler.ppo.policy import ActiveRIRPolicy
 from rir_rendering.active_context_sampler.ppo.ppo import PPO
 from rir_rendering.uniform_context_sampler.policy import UniformContextSamplerPolicy
 from rir_rendering.common.eval_metrics import compute_spect_metrics
-from habitat_audio.utils import load_points_data
+from habitat_audio.utils import (
+    load_points_data,
+    Mapper,
+    generate_topdown_allocentric_map,
+    convert_gt2channel_to_gtrgb,
+    add_pose, 
+    convert_world2map,
+    measure_area_seen_performance
+)
 from rir_rendering.datasets.dataset import UniformContextSamplerDataset
 
 
@@ -71,13 +83,23 @@ class ActiveRIRTrainer(BaseRLTrainer):
         self.scene_count = dict(Counter(scene_names))
 
         if self.config.RL.USE_EARLY_ANNEALING:
-            self.early_sampling_penalty = 10.0
+            self.early_sampling_penalty = 4.0
             self.penalty_annealing_steps = int(self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS * self.config.RL.EARLY_ANNEALING_FRAC)
             self.num_updates = 0
+
+        if self.config.RL.USE_COOLDOWN_ANNEALING:
+            self.cooldown_penalty = 4
+            self.cooldown_timer = 0
+    
+        ans_cfg = self.config.RL.ANS
+        self.mapper = Mapper(ans_cfg.MAPPER)
+
+        self.s = ans_cfg.MAPPER.map_scale
 
     def get_novelty_reward(self, env_index, curr_obs):
         if curr_obs is not None:
             pose = tuple(curr_obs['pose'])[:2]
+            pose = (pose[0]//self.config.RL.NOVELTY_GRID_FACTOR, pose[1]//self.config.RL.NOVELTY_GRID_FACTOR)
             if pose in self.novelty_count[env_index].keys():
                 novelty_reward = 1/math.sqrt(self.novelty_count[env_index][pose])
                 self.novelty_count[env_index][pose] += 1.0
@@ -87,17 +109,24 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 return 1.0
         else:
             return 0
+        
+    def get_coverage_reward(self, vis_occ):
+        return measure_area_seen_performance(
+                vis_occ, reduction="sum"
+            )["area_seen"]
 
-    def get_reward(self, prev_observations, env_index, curr_obs=None, use_sparse_reward=False, episode_step=None, action=None):
-        reward = 0
+    def get_reward(self, prev_observations, env_index, vis_occ, curr_obs=None, use_sparse_reward=False, episode_step=None, action=None):
+        reward = 0.0
 
-        #reward for the actions taken after you already captured 20 contextual obs is irrelevant
         if len(prev_observations) == 20:
-            return reward 
+            return reward
 
         if self.config.RL.WITH_NOVELTY_REWARD:
             reward += self.get_novelty_reward(env_index, curr_obs)
-        
+
+        if self.config.RL.WITH_COVERAGE_REWARD:
+            reward += self.get_coverage_reward(vis_occ)
+
         if self.config.RL.WITH_RIR_REWARD:
             if len(prev_observations) != 1:
                 curr_rir_error = self._curr_rir_error[env_index]
@@ -114,7 +143,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 next_rir_error = 0
             
             reward += (
-                next_rir_error - curr_rir_error
+                curr_rir_error - next_rir_error
             ) * self.config.RL.MEASUREMENT_RIR_REWARD_SCALE
 
             if use_sparse_reward:
@@ -123,11 +152,23 @@ class ActiveRIRTrainer(BaseRLTrainer):
             self._curr_rir_error[env_index] = next_rir_error
 
         if self.config.RL.USE_EARLY_ANNEALING and episode_step < self.penalty_annealing_steps:
-                initial_penalty = self.early_sampling_penalty * (1-self.num_updates/self.config.NUM_UPDATES)
-                current_penalty = initial_penalty - initial_penalty * (episode_step / self.penalty_annealing_steps)
-                if action == 3 or action == 4 or action == 5:
-                    reward -= current_penalty
-                current_penalty = None
+            initial_penalty = self.early_sampling_penalty #removed temporal annealing: * (1-self.num_updates/self.config.NUM_UPDATES)
+            current_penalty = initial_penalty #removed spatial annealing: - initial_penalty * (episode_step / self.penalty_annealing_steps)
+            if action == 3 or action == 4 or action == 5:
+                reward -= current_penalty
+            current_penalty = None
+            
+        if self.config.RL.USE_COOLDOWN_ANNEALING:
+            #removed temporal annealing: current_cooldown_window = max(10,int(self.config.RL.SAMPLING_COOLDOWN_PERIOD*(1-(self.num_updates/self.config.NUM_UPDATES))))
+            current_cooldown_window = self.config.RL.SAMPLING_COOLDOWN_PERIOD
+            if action == 3 or action == 4 or action == 5:
+                if self.cooldown_timer > 0:
+                    reward -= self.cooldown_penalty
+
+                #reset the cooldown timer  
+                self.cooldown_timer = current_cooldown_window
+            else:
+                self.cooldown_timer = max(0, self.cooldown_timer - 1)
 
         return reward
     
@@ -204,32 +245,32 @@ class ActiveRIRTrainer(BaseRLTrainer):
         with torch.no_grad():
             preds = self.rir_predictor(context_observations)
 
-        if self.config.UniformContextSampler.predict_in_logspace:
-            if self.config.UniformContextSampler.log_instead_of_log1p_in_logspace:
-                pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]))\
-                                    - self.config.UniformContextSampler.log_gt_eps
+            if self.config.UniformContextSampler.predict_in_logspace:
+                if self.config.UniformContextSampler.log_instead_of_log1p_in_logspace:
+                    pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:]))\
+                                        - self.config.UniformContextSampler.log_gt_eps
+                else:
+                    pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:])) - 1
             else:
-                pred_spect_mag = torch.exp(preds.view(-1, *preds.size()[2:])) - 1
-        else:
-            pred_spect_mag = preds.view(-1, *preds.size()[2:])
-        
-        gt_rirs_mag = self.gt_rirs_mag[env_index]
-        gt_rirs_phase = self.gt_rirs_phase[env_index]
-        pred_spect_mag = pred_spect_mag.detach().cpu()
+                pred_spect_mag = preds.view(-1, *preds.size()[2:])
+            
+            gt_rirs_mag = self.gt_rirs_mag[env_index]
+            gt_rirs_phase = self.gt_rirs_phase[env_index]
+            pred_spect_mag = pred_spect_mag.detach().cpu()
 
-        eval_metrics_batch = compute_spect_metrics(
-                            metric_types=['stft_l1_distance'] if not return_all_metrics else self.config.UniformContextSampler.EvalMetrics.types,
-                            gt_spect_mag=gt_rirs_mag,
-                            gt_spect_phase=gt_rirs_phase,
-                            pred_spect_mag=pred_spect_mag,
-                            eval_mode=True,
-                            fs=self.config.TASK_CONFIG.SIMULATOR.AUDIO.RIR_SAMPLING_RATE,
-                            hop_length=self.config.TASK_CONFIG.SIMULATOR.AUDIO.HOP_LENGTH,
-                            n_fft=self.config.TASK_CONFIG.SIMULATOR.AUDIO.N_FFT,
-                            win_length=self.config.TASK_CONFIG.SIMULATOR.AUDIO.WIN_LENGTH,
-                        )
+            eval_metrics_batch = compute_spect_metrics(
+                                metric_types=['stft_l1_distance'] if not return_all_metrics else self.config.UniformContextSampler.EvalMetrics.types,
+                                gt_spect_mag=gt_rirs_mag,
+                                gt_spect_phase=gt_rirs_phase,
+                                pred_spect_mag=pred_spect_mag,
+                                eval_mode=True,
+                                fs=self.config.TASK_CONFIG.SIMULATOR.AUDIO.RIR_SAMPLING_RATE,
+                                hop_length=self.config.TASK_CONFIG.SIMULATOR.AUDIO.HOP_LENGTH,
+                                n_fft=self.config.TASK_CONFIG.SIMULATOR.AUDIO.N_FFT,
+                                win_length=self.config.TASK_CONFIG.SIMULATOR.AUDIO.WIN_LENGTH,
+                            )
 
-        return eval_metrics_batch, gt_rirs_mag, pred_spect_mag
+        return eval_metrics_batch, gt_rirs_mag, preds
 
     def _setup_actor_critic_agent(self, cfg: Config, observation_space=None) -> None:
         r"""Sets up actor critic and agent for PPO.
@@ -263,6 +304,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             lr=ppo_cfg.lr,
             eps=ppo_cfg.eps,
             max_grad_norm=ppo_cfg.max_grad_norm,
+            use_normalized_advantage=True
         )
 
     def save_checkpoint(self, file_name: str) -> None:
@@ -297,7 +339,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
     def _collect_rollout_step(
         self, rollouts, current_episode_reward, current_episode_step, episode_rewards,
-            episode_counts, episode_steps, episode_rir_errors
+            episode_counts, episode_steps, episode_rir_errors, ground_truth_states, prev_pose
     ):
         pth_time = 0.0
         env_time = 0.0
@@ -337,16 +379,22 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
                 observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
                 rewards[i] = 0.0
+
+                #reset global map with new initial ego_map observations
+                for key in ground_truth_states:
+                    ground_truth_states[key][i] = torch.zeros_like(ground_truth_states[key][i], device=self.device, requires_grad=False)
+                prev_pose[i] = torch.tensor(observations[i]['pose'])
             else:
                 observations[i]['depth'] = observations[i]['depth'].squeeze(-1) if len(observations[i]['depth'].shape) == 4 else observations[i]['depth']
                 if self.config.UNIFORM_SAMPLE:
                     if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
-                        context_obs = {k: v[i].cpu() for k, v in batch.items()}
+                        context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
                         self.context_observations[i].append(context_obs)
-                elif (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
-                    context_obs = {k: v[i].cpu() for k, v in batch.items()}
-                    self.context_observations[i].append(context_obs)
-                rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i],
+                else:
+                    if (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
+                        context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
+                        self.context_observations[i].append(context_obs)
+                rewards[i] = self.get_reward(self.context_observations[i], i, ground_truth_states['visible_occupancy'][i].clone(), curr_obs=observations[i],
                                              use_sparse_reward=(len(self.context_observations[i])==self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-1),
                                              episode_step=current_episode_step[i].item(), action=actions[i][0].item())
 
@@ -361,6 +409,25 @@ class ActiveRIRTrainer(BaseRLTrainer):
         episode_rir_error = torch.tensor(episode_rir_error, dtype=torch.float)
         episode_rir_error = episode_rir_error.unsqueeze(1)
         batch = batch_obs(observations)
+
+        #update global map with new ego observation
+        ground_truth_states[
+            "visible_occupancy"
+        ] = self.mapper.ext_register_map(
+            ground_truth_states["visible_occupancy"],
+            batch["ego_map"].permute(0, 3, 1, 2),
+            batch["pose"],
+            prev_pose
+        )
+
+        with torch.no_grad():
+            downsampled_map = F.interpolate(ground_truth_states[
+                "visible_occupancy"
+            ],
+            size=(241, 241),
+            mode='bilinear',
+            align_corners=False)
+        batch['occupancy_map'].copy_(downsampled_map) #TODO: check why we use .copy_() instead of .clone(), as you do elsewhere
 
         masks = torch.tensor(
             [[0.0] if done else [1.0] for done in dones], dtype=torch.float
@@ -390,9 +457,14 @@ class ActiveRIRTrainer(BaseRLTrainer):
             prev_obs_hidden_states=None,
         )
 
+        prev_pose.copy_(batch['pose'])
         pth_time += time.time() - t_update_stats
 
-        return pth_time, env_time, self.envs.num_envs
+        batch = None
+        observations = None
+        torch.cuda.empty_cache()
+
+        return pth_time, env_time, self.envs.num_envs, prev_pose
 
     def _update_agent(self, ppo_cfg, rollouts):
         t_update_model = time.time()
@@ -440,6 +512,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         )
 
         ppo_cfg = self.config.RL.PPO
+        ans_cfg = self.config.RL.ANS
         self.device = (
             torch.device("cuda", self.config.TORCH_GPU_ID)
             if torch.cuda.is_available()
@@ -482,15 +555,43 @@ class ActiveRIRTrainer(BaseRLTrainer):
         self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
         self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
 
+        M = ans_cfg.overall_map_size
+        ground_truth_states = {
+            # To measure area seen
+            "visible_occupancy": torch.zeros(
+                self.envs.num_envs, 2, M, M
+            ),
+        }
+
         #get initial observations
         observations_and_queries = self.envs.reset()
         observations = [self.initialize_queries_gt_rirs_and_observations(obs, i) for i, obs in enumerate(observations_and_queries)]
         batch = batch_obs(observations)
+        prev_pose = batch['pose'].clone()
+        ground_truth_states[
+            "visible_occupancy"
+        ] = self.mapper.ext_register_map(
+            ground_truth_states["visible_occupancy"],
+            batch["ego_map"].permute(0, 3, 1, 2),
+            batch["pose"],
+            prev_pose
+        )
+
+        with torch.no_grad():
+            downsampled_map = F.interpolate(ground_truth_states[
+                "visible_occupancy"
+            ],
+            size=(241, 241),
+            mode='bilinear',
+            align_corners=False)
+
+        batch['occupancy_map'] = downsampled_map.clone()
         for sensor in rollouts.observations:
             rollouts.observations[sensor][0].copy_(batch[sensor])
 
         batch = None
         observations = None
+        torch.cuda.empty_cache()
 
         # episode_rewards and episode_counts accumulates over the entire training course
         episode_rewards = torch.zeros(self.envs.num_envs, 1)
@@ -531,14 +632,16 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 #collect trajectories
                 self.agent.eval()
                 for step in tqdm(range(ppo_cfg.num_steps)):
-                    delta_pth_time, delta_env_time, delta_steps = self._collect_rollout_step(
+                    delta_pth_time, delta_env_time, delta_steps, prev_pose = self._collect_rollout_step(
                         rollouts,
                         current_episode_reward,
                         current_episode_step,
                         episode_rewards,
                         episode_counts,
                         episode_steps,
-                        episode_rir_errors
+                        episode_rir_errors,
+                        ground_truth_states,
+                        prev_pose
                     )
                     pth_time += delta_pth_time
                     env_time += delta_env_time
@@ -661,6 +764,9 @@ class ActiveRIRTrainer(BaseRLTrainer):
             config = self.config.clone()
 
         ppo_cfg = config.RL.PPO
+        ans_cfg = config.RL.ANS
+
+        self.mapper = Mapper(ans_cfg.MAPPER)
 
         config.defrost()
         config.TASK_CONFIG.DATASET.SPLIT = config.EVAL.SPLIT
@@ -703,6 +809,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         self.agent.load_state_dict(ckpt_dict["state_dict"])
         self.actor_critic = self.agent.actor_critic
+        self.actor_critic.eval()
         self.agent.eval()
 
         self.metric_uuids = []
@@ -731,13 +838,39 @@ class ActiveRIRTrainer(BaseRLTrainer):
         self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
         self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
 
+        M = ans_cfg.overall_map_size
+        ground_truth_states = {
+            # To measure area seen
+            "visible_occupancy": torch.zeros(
+                self.envs.num_envs, 2, M, M, device=self.device, requires_grad=False
+            ),
+        }
+
         observations_and_queries = self.envs.reset()
         observations = [self.initialize_queries_gt_rirs_and_observations(obs, i) for i, obs in enumerate(observations_and_queries)]
         if self.config.DISPLAY_RESOLUTION != model_resolution:
             resize_observation(observations, model_resolution)
 
         batch = batch_obs(observations, self.device)
+        prev_pose = batch['pose'].clone()
+        ground_truth_states[
+            "visible_occupancy"
+        ] = self.mapper.ext_register_map(
+            ground_truth_states["visible_occupancy"],
+            batch["ego_map"].permute(0, 3, 1, 2),
+            batch["pose"],
+            prev_pose
+        )
 
+        with torch.no_grad():
+            downsampled_map = F.interpolate(ground_truth_states[
+                "visible_occupancy"
+            ],
+            size=(241, 241),
+            mode='bilinear',
+            align_corners=False)
+
+        batch['occupancy_map'] = downsampled_map.clone()
         current_episode_step = torch.zeros(
             self.envs.num_envs, 1,
         )
@@ -772,6 +905,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
 
         stats_episodes = dict()  # dict of dicts that stores stats per episode
+        episode_visualization_maps = []
 
         rgb_frames = [
             [] for _ in range(self.config.NUM_PROCESSES)
@@ -814,8 +948,13 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
                     if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
                         self.prev_ref_pose = self.ref_pose
-                    observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i, reset_context=False)
+                    observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i, reset_context_and_queries=False)
                     rewards[i] = 0.0
+
+                    #reset global map with new initial ego_map observations
+                    for key in ground_truth_states:
+                        ground_truth_states[key][i] = torch.zeros_like(ground_truth_states[key][i], device=self.device, requires_grad=False)
+                    prev_pose[i] = torch.tensor(observations[i]['pose'])
                 else:
                     observations[i]['depth'] = observations[i]['depth'].squeeze(-1) if len(observations[i]['depth'].shape) == 4 else observations[i]['depth']
                     if self.config.UNIFORM_SAMPLE:
@@ -829,27 +968,60 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     if self.config.TEST_REWARD_ZERO:
                         rewards[i] = 0.0
                     else:
-                        rewards[i] = self.get_reward(self.context_observations[i], i, curr_obs=observations[i],
+                        rewards[i] = self.get_reward(self.context_observations[i], i, ground_truth_states['visible_occupancy'][i].clone(), curr_obs=observations[i],
                                                      use_sparse_reward=(len(self.context_observations[i])==self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-1))
 
             current_episode_step += 1
             for i in range(self.envs.num_envs):
-                if len(self.config.VIDEO_OPTION) > 0:
-                    if config.TASK_CONFIG.SIMULATOR.CONTINUOUS_VIEW_CHANGE and 'intermediate' in observations[i]:
-                        for observation in observations[i]['intermediate']:
-                            frame = observations_to_image(observation, infos[i])
-                            rgb_frames[i].append(frame)
-                        del observations[i]['intermediate']
-
+                if len(self.config.VIDEO_OPTION) > 0 and current_episode_step < self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS - 2:
                     if "rgb" not in observations[i]:
                         observations[i]["rgb"] = np.zeros((self.config.DISPLAY_RESOLUTION,
                                                            self.config.DISPLAY_RESOLUTION, 3))
-                    frame = observations_to_image(observations[i], infos[i])
+                    frame = observations_to_image(observations[i], infos[i], observation_size=300)
+                    ego_map_gt_i = asnumpy(batch["ego_map"][i])  # (2, H, W)
+                    ego_map_gt_i = convert_gt2channel_to_gtrgb(ego_map_gt_i)
+                    ego_map_gt_i = cv2.resize(ego_map_gt_i, (300, 300))
+                    frame = np.concatenate([frame, ego_map_gt_i], axis=1)
+                    visible_occupancy = asnumpy(
+                                ground_truth_states["visible_occupancy"][i]
+                            )  # (2, H, W)
+                    vis_occ_rgb = convert_gt2channel_to_gtrgb(np.transpose(visible_occupancy, (1, 2, 0)))
+                    H = frame.shape[0]
+                    visible_occupancy_vis = generate_topdown_allocentric_map(
+                        visible_occupancy, #TO DO: replace with environment_layout
+                        visible_occupancy,
+                        thresh_explored=ans_cfg.thresh_explored,
+                        thresh_obstacle=ans_cfg.thresh_obstacle,
+                    )
+                    visible_occupancy_vis = cv2.resize(
+                        vis_occ_rgb, (H, H)
+                    )
+                    frame = np.concatenate([frame, visible_occupancy_vis], axis=1)
                     rgb_frames[i].append(frame)
 
             if config.DISPLAY_RESOLUTION != model_resolution:
                 resize_observation(observations, model_resolution)
             batch = batch_obs(observations, self.device)
+
+            #update global map with new ego observation
+            ground_truth_states[
+                "visible_occupancy"
+            ] = self.mapper.ext_register_map(
+                ground_truth_states["visible_occupancy"],
+                batch["ego_map"].permute(0, 3, 1, 2),
+                batch["pose"],
+                prev_pose
+            )
+
+            with torch.no_grad():
+                downsampled_map = F.interpolate(ground_truth_states[
+                    "visible_occupancy"
+                ],
+                size=(241, 241),
+                mode='bilinear',
+                align_corners=False)
+            batch['occupancy_map'].copy_(downsampled_map)
+            prev_pose.copy_(batch['pose'])
 
             not_done_masks = torch.tensor(
                 [[0.0] if done else [1.0] for done in dones],
@@ -897,16 +1069,15 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             obs = self.get_fs_rir_obs(current_episodes[i].scene_id, len(stats_episodes))
                             obs = {key: val.unsqueeze(0) for key, val in obs.items()}                    
                             fs_mask = torch.zeros(obs['context_mask'].shape)
-                            query_poses = torch.unsqueeze(torch.tensor(self.query_positions[i]),0)
-                            query_mask = torch.ones(query_poses.shape[0], query_poses.shape[1])
-                            obs['query_poses'] = query_poses
-                            obs['query_mask'] = query_mask
                             for n in range(len(self.context_observations[i])):
                                 fs_mask[0,n] = 1
                                 obs['context_mask'] = fs_mask
                                 self.intermediate_fs_rir_errors[len(stats_episodes)]['metrics'].append(self._current_measurement_error(obs, 0, return_all_metrics=True)[0])
                             self.intermediate_fs_rir_errors[len(stats_episodes)]['episode'] = (current_episodes[i].scene_id, current_episodes[i].episode_id)
 
+                    with open(os.path.join(self.config.TENSORBOARD_DIR, "context_visualization.pkl"), 'wb') as file:
+                        combined_data = (self.context_observations[i], self.query_positions[i], preds)
+                        pickle.dump(combined_data, file)
                     self.reset_and_initialize_context(observations[i], env_index=i)
                     # use scene_id + episode_id as unique id for storing stats
                     stats_episodes[
@@ -918,6 +1089,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     t.update()
 
                     if len(self.config.VIDEO_OPTION) > 0:
+                        episode_visualization_maps.append(rgb_frames[i][-1])
                         fps = int(1 / self.config.TASK_CONFIG.SIMULATOR.STEP_TIME)
                         if 'sound' in current_episodes[i].info:
                             sound = current_episodes[i].info['sound']
@@ -959,7 +1131,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                                                               config.BASE_TASK_CONFIG_PATH.split('/')[-1][:-5]),
                                          rir_plot,
                                          dataformats='WHC')
-
+                        
             (
                 self.envs,
                 test_recurrent_hidden_states,
@@ -991,14 +1163,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
             intermediate_file = os.path.join(config.TENSORBOARD_DIR, 'intermediate_errors_full.json')
             with open(intermediate_file, 'w') as json_file:
                 json.dump(self.intermediate_rir_errors, json_file, indent=4)
-            print("done")
 
         if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
             print("dumping intermediate FS-RIR error metrics...")
             intermediate_fs_rir_file = os.path.join(config.TENSORBOARD_DIR, 'intermediate_errors_fs_rir_full.json')
             with open(intermediate_fs_rir_file, 'w') as json_file:
                 json.dump(self.intermediate_fs_rir_errors, json_file, indent=4)
-            print("done")
 
         if not (self.config.SAVE_INTERMEDIATE_RIR_ERRORS or self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS):
             stats_file = os.path.join(config.TENSORBOARD_DIR, '{}_stats_{}.json'.format(config.EVAL.SPLIT, config.SEED))
@@ -1020,6 +1190,14 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 writer.add_scalar(f"{config.EVAL.SPLIT}/{metric}", episode_metrics_mean[metric],
                                   checkpoint_index)
 
+        #save episode global maps
+        if len(self.config.VIDEO_OPTION) > 0:
+            per_episode_maps = np.stack(episode_visualization_maps, axis=0)
+            h5py_save_path = f"{config.TENSORBOARD_DIR}/visualized_maps.h5"
+            h5file = h5py.File(h5py_save_path, "w")
+            h5file.create_dataset("maps", data=per_episode_maps)
+            h5file.close()
+
         self.envs.close()
 
         result = {}
@@ -1040,19 +1218,19 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         return depth
     
-    def initialize_queries_gt_rirs_and_observations(self, initial_observations, i, reset_context=True):
+    def initialize_queries_gt_rirs_and_observations(self, initial_observations, i, reset_context_and_queries=True):
         observations, query_positions, gt_rirs_mags, gt_rirs_phases, ref_pose = initial_observations
         if len(observations['depth'].shape) == 4:
             observations['depth'] = observations['depth'].squeeze(-1)
-        self.query_positions[i] = list(query_positions)
-        self.gt_rirs_mag[i] = torch.tensor(gt_rirs_mags)
-        self.gt_rirs_phase[i] = torch.tensor(gt_rirs_phases)
 
         if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
             self.ref_pose = ref_pose
 
-        if reset_context:
+        if reset_context_and_queries:
             self.reset_and_initialize_context(observations, i)
+            self.query_positions[i] = list(query_positions)
+            self.gt_rirs_mag[i] = torch.tensor(gt_rirs_mags)
+            self.gt_rirs_phase[i] = torch.tensor(gt_rirs_phases)
 
         if self.config.RL.WITH_NOVELTY_REWARD:
             self.novelty_count[i] = {}
@@ -1096,7 +1274,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 eval_mode=True,
                 ckpt_rootdir_path=self.config.MODEL_DIR,
             )
-        context = dataset.get_context(scene, count_index=(index % self.scene_count[scene]) + 1, first_obs=self.prev_ref_pose)
+        context = dataset.get_context(scene, count_index=(index % self.scene_count[scene]) + 1, first_obs=None) #self.prev_ref_pose
 
         return context
 

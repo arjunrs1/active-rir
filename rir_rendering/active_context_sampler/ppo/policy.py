@@ -21,6 +21,7 @@ from ss_baselines.av_nav.models.visual_cnn import VisualCNN
 from ss_baselines.av_nav.models.audio_cnn import AudioCNN
 
 from rir_rendering.models.visual_cnn import VisualEnc
+from rir_rendering.models.global_map_encoder import MapEncoder
 from rir_rendering.models.audio_cnn import AudioEnc, AudioDec
 from rir_rendering.models.positional_net import PositionalEnc, LowDimPositionalEnc
 from rir_rendering.models.fusion_net import FusionNet
@@ -169,9 +170,16 @@ class ContextEncoderNet(Net):
             positional_enc_cfg=self._sampler_cfg.PositionalEnc,
         )
 
+        self.global_map_enc = MapEncoder()
+
         #multi-modal fusion network
         if self._sampler_cfg.encode_each_modality_as_independent_context_entry:
-            n_input_feats_fusion_context_enc = sum([context_enc.n_out_feats for context_enc in [self.visual_context_enc, self.audio_context_enc, self.pose_context_enc]])
+            n_input_feats_fusion_context_enc = sum([context_enc.n_out_feats for context_enc in [
+                self.visual_context_enc,
+                self.audio_context_enc,
+                self.pose_context_enc,
+                self.global_map_enc
+            ]])
             self.fusion_context_enc = FusionNet(trainer_cfg=self._sampler_cfg, n_input_feats=n_input_feats_fusion_context_enc)
             self.fused_context_layer = nn.Sequential(
                     nn.Linear(1024, 512, bias=False),
@@ -203,6 +211,8 @@ class ContextEncoderNet(Net):
         depth = self.normalize_depth(observations['depth'])
         assert 'pose' in observations
         pose = observations['pose']
+        assert 'occupancy_map' in observations
+        global_occ_map = observations['occupancy_map']
 
         context_feats = []
 
@@ -222,6 +232,9 @@ class ContextEncoderNet(Net):
 
         pose_context_feats = self.pose_context_enc({"positional_obs": pose})
         context_feats.append(pose_context_feats)
+
+        map_context_feats = self.global_map_enc({"occupancy_map": global_occ_map})
+        context_feats.append(map_context_feats)
 
         #concatenate encoded modalities
         x1 = self.fusion_context_enc(torch.cat(context_feats, dim=1).unsqueeze(0))

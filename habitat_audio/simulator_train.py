@@ -432,45 +432,7 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         self.gt_rirs_mags = None
         self.gt_rirs_phases = None
 
-    def compute_relative_pose(self, current_pose=None, ref_pose=None):
-        """
-        compute relative pose
-        :param current_pose: current pose
-        :param ref_pose: reference pose
-        :param scene_graph: scene graph
-        :return: relative pose
-        """
-        assert isinstance(current_pose, list)
-        assert isinstance(ref_pose, list)
-        assert len(ref_pose) == 2
-        assert len(current_pose) == 3
 
-        ref_position_xyz = np.array(list(self.graph.nodes[ref_pose[0]]["point"]), dtype=np.float32)
-        rotation_world_ref = quat_from_angle_axis(np.deg2rad(self._compute_rotation_from_azimuth(ref_pose[1])),
-                                                  np.array([0, 1, 0]))
-
-        agent_position_xyz = np.array(list(self.graph.nodes[current_pose[0]]["point"]), dtype=np.float32)
-        agent_position_xyz = quaternion_rotate_vector(
-            rotation_world_ref.inverse(), agent_position_xyz - ref_position_xyz
-        )
-
-        audio_source_position_xyz = np.array(list(self.graph.nodes[current_pose[1]]["point"]), dtype=np.float32)
-        audio_source_position_xyz = audio_source_position_xyz - ref_position_xyz
-
-        rotation_world_agent = quat_from_angle_axis(np.deg2rad(self._compute_rotation_from_azimuth(current_pose[2])),
-                                                    np.array([0, 1, 0]))
-        # next 2 lines compute relative rotation in the counter-clockwise direction, i.e. -z to -x
-        # rotation_world_agent.inverse() * rotation_world_ref = rotation_world_agent - rotation_world_ref
-        heading_vector = quaternion_rotate_vector(rotation_world_agent.inverse() * rotation_world_ref,
-                                                  np.array([0, 0, -1]))
-        agent_heading = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
-
-        return [-agent_position_xyz[2], agent_position_xyz[0], -audio_source_position_xyz[2],
-                audio_source_position_xyz[0], agent_heading]
-    
-    def get_reference_pose(self):
-        #for use in RelativePoseSensor
-        return self.reference_pose
 
     def reset(self):
         r"""
@@ -886,6 +848,9 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         self._house_readers = dict()
         self._use_oracle_planner = True
         self._oracle_actions = list()
+        self.scene_to_query_idx_mapping = {}
+        self.split = self.config.SPLIT
+        self.max_query_length = self.config.MAX_QUERY_LENGTH
 
         self.points, self.graph = load_metadata(self.metadata_dir)
         for node in self.graph.nodes():
@@ -916,6 +881,59 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         self.gt_rirs_mags = None
         self.gt_rirs_phases = None
 
+        #self.split = "seen_eval" # only use if debugging with that one scene
+
+        if self.split == "seen_eval":
+            arbitrary_rir_seen_env_eval_query_pose_idxs_path = self.config.ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH
+            assert arbitrary_rir_seen_env_eval_query_pose_idxs_path is not None
+            assert os.path.isfile(arbitrary_rir_seen_env_eval_query_pose_idxs_path)
+            with open(arbitrary_rir_seen_env_eval_query_pose_idxs_path, "rb") as fi:
+                self.arbitrary_rir_query_pose_idxs_from_disk = pickle.load(fi)
+
+            arbitrary_rir_seen_env_eval_scene_names_path = self.config.ARBITRARY_RIR_SEEN_ENV_EVAL_SCENE_NAMES_PATH
+            assert arbitrary_rir_seen_env_eval_scene_names_path is not None
+            assert os.path.isfile(arbitrary_rir_seen_env_eval_scene_names_path)
+            with open(arbitrary_rir_seen_env_eval_scene_names_path, "rb") as fi:
+                self.arbitrary_rir_scene_names_from_disk = pickle.load(fi)
+
+            arbitrary_rir_seen_env_eval_query_pose_subgraph_idxs_path = self.config.ARBITRARY_RIR_SEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH
+            assert arbitrary_rir_seen_env_eval_query_pose_subgraph_idxs_path is not None
+            assert os.path.isfile(arbitrary_rir_seen_env_eval_query_pose_subgraph_idxs_path)
+            with open(arbitrary_rir_seen_env_eval_query_pose_subgraph_idxs_path, "rb") as fi:
+                self.arbitrary_rir_query_pose_subgraph_idxs_from_disk = pickle.load(fi)
+        elif self.split == "unseen_eval":
+            arbitrary_rir_unseen_env_eval_query_pose_idxs_path = self.config.ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_IDXS_PATH
+            assert arbitrary_rir_unseen_env_eval_query_pose_idxs_path is not None
+            assert os.path.isfile(arbitrary_rir_unseen_env_eval_query_pose_idxs_path)
+            with open(arbitrary_rir_unseen_env_eval_query_pose_idxs_path, "rb") as fi:
+                self.arbitrary_rir_query_pose_idxs_from_disk = pickle.load(fi)
+
+            arbitrary_rir_unseen_env_val_scene_names_path = self.config.ARBITRARY_RIR_UNSEEN_ENV_EVAL_SCENE_NAMES_PATH
+            assert arbitrary_rir_unseen_env_val_scene_names_path is not None
+            assert os.path.isfile(arbitrary_rir_unseen_env_val_scene_names_path)
+            with open(arbitrary_rir_unseen_env_val_scene_names_path, "rb") as fi:
+                self.arbitrary_rir_scene_names_from_disk = pickle.load(fi)
+
+            arbitrary_rir_unseen_env_val_query_pose_subgraph_idxs_path = self.config.ARBITRARY_RIR_UNSEEN_ENV_EVAL_QUERY_POSE_SUBGRAPH_IDXS_PATH
+            assert arbitrary_rir_unseen_env_val_query_pose_subgraph_idxs_path is not None
+            assert os.path.isfile(arbitrary_rir_unseen_env_val_query_pose_subgraph_idxs_path)
+            with open(arbitrary_rir_unseen_env_val_query_pose_subgraph_idxs_path, "rb") as fi:
+                self.arbitrary_rir_query_pose_subgraph_idxs_from_disk = pickle.load(fi)
+
+        self._arr_query_poses_per_scene = None
+        if self.split == "train":
+            assert os.path.isfile(self.config.AUDIO.VALID_ARBITRARY_RIR_TRAIN_POSES_PATH)
+            with open(self.config.AUDIO.VALID_ARBITRARY_RIR_TRAIN_POSES_PATH, "rb") as fi:
+                self._arr_query_poses_per_scene = pickle.load(fi)
+        elif self.split == "seen_eval":
+            assert os.path.isfile(self.config.AUDIO.VALID_ARBITRARY_RIR_SEEN_ENV_EVAL_POSES_PATH)
+            with open(self.config.AUDIO.VALID_ARBITRARY_RIR_SEEN_ENV_EVAL_POSES_PATH, "rb") as fi:
+                self._arr_query_poses_per_scene = pickle.load(fi)
+        elif self.split == "unseen_eval":
+            assert os.path.isfile(self.config.AUDIO.VALID_ARBITRARY_RIR_UNSEEN_ENV_EVAL_POSES_PATH)
+            with open(self.config.AUDIO.VALID_ARBITRARY_RIR_UNSEEN_ENV_EVAL_POSES_PATH, "rb") as fi:
+                self._arr_query_poses_per_scene = pickle.load(fi)
+
     def add_acoustic_config(self):
         audio_sensor_spec = habitat_sim.AudioSensorSpec()
         audio_sensor_spec.uuid = "audio_sensor"
@@ -942,7 +960,10 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         assert len(ref_pose) == 2
         assert len(current_pose) == 3
 
-        ref_position_xyz = np.array(list(self.graph.nodes[ref_pose[0]]["point"]), dtype=np.float32)
+        if not isinstance(ref_pose[0], list):
+            ref_position_xyz = np.array(list(self.graph.nodes[ref_pose[0]]["point"]), dtype=np.float32)
+        else:
+            ref_position_xyz = np.array(list(ref_pose[0]), dtype=np.float32)
         rotation_world_ref = quat_from_angle_axis(np.deg2rad(self._compute_rotation_from_azimuth(ref_pose[1])),
                                                   np.array([0, 1, 0]))
 
@@ -962,12 +983,15 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
                                                   np.array([0, 0, -1]))
         agent_heading = cartesian_to_polar(-heading_vector[2], heading_vector[0])[1]
 
-        return [-agent_position_xyz[2], agent_position_xyz[0], -audio_source_position_xyz[2],
-                audio_source_position_xyz[0], agent_heading]
+        """ return [agent_position_xyz[0], -agent_position_xyz[2], audio_source_position_xyz[0],
+                -audio_source_position_xyz[2], agent_heading] """
+        
+        return [round(-agent_position_xyz[2]), round(agent_position_xyz[0]), round(-audio_source_position_xyz[2]),
+                round(audio_source_position_xyz[0]), agent_heading]
 
     def get_reference_pose(self):
         #for use in RelativePoseSensor
-        return self.reference_pose
+        return [self.config.AGENT_0.START_POSITION, self.azimuth_angle]
  
     def create_sim_config(
         self, _sensor_suite: SensorSuite
@@ -1010,7 +1034,8 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
                 "coefficient_of_restitution",
                 "distractor_sound_id",
                 "distractor_position_index",
-                "query_position_idxs"
+                "query_position_idxs",
+                "subgraph"
             },
         )
 
@@ -1217,12 +1242,14 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             self._sim.set_agent_state(list(self.graph.nodes[self._receiver_position_index]['point']),
                                       quat_from_coeffs(self.config.AGENT_0.START_ROTATION))
         else:
-            self.set_agent_state(list(self.graph.nodes[self._receiver_position_index]['point']),
+            self.set_agent_state(list(np.array(self.config.AGENT_0.START_POSITION) + np.array([0, 1.5, 0])),
                                  self.config.AGENT_0.START_ROTATION)
 
-        logging.debug("Initial source, agent at: {}, {}, orientation: {}".
-                      format(self._source_position_index, self._receiver_position_index, self.get_orientation()))
-        self.reference_pose = [self._receiver_position_index, self.azimuth_angle]
+        """ logging.debug("Initial source, agent at: {}, {}, orientation: {}".
+                      format(self._source_position_index, self._receiver_position_index, self.get_orientation())) """
+
+        self.subgraph_index = self.config.AGENT_0.SUBGRAPH
+        #self.reference_pose = [self._receiver_position_index, self.azimuth_angle]
 
     def generate_gt_RIRs(self, query_pose_idxs):
         assert query_pose_idxs is not None
@@ -1377,16 +1404,16 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             raise ValueError("Position misalignment.")
 
     def _get_sim_observation(self):
-        joint_index = (self._receiver_position_index, self._rotation_angle)
+        """ joint_index = (self._receiver_position_index, self._rotation_angle)
         if joint_index in self._frame_cache:
             return self._frame_cache[joint_index]
         else:
-            assert not self.config.USE_RENDERED_OBSERVATIONS
-            sim_obs = self._sim.get_sensor_observations()
-            for sensor in sim_obs:
-                sim_obs[sensor] = sim_obs[sensor]
-            self._frame_cache[joint_index] = sim_obs
-            return sim_obs
+            assert not self.config.USE_RENDERED_OBSERVATIONS """
+        sim_obs = self._sim.get_sensor_observations()
+        for sensor in sim_obs:
+            sim_obs[sensor] = sim_obs[sensor]
+        #self._frame_cache[joint_index] = sim_obs
+        return sim_obs
 
     def reset(self):
         logging.debug('Reset simulation')
@@ -1404,16 +1431,36 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         # Encapsule data under Observations class
         observations = self._sensor_suite.get_observations(sim_obs)
 
+        #TODO: change this away from SS 1.0 queries, and do not restrict it by subgraph.
         if self._get_queries_and_RIRs:
-            if self.query_poses is not None and self.is_same_scene:
-                pass
-            else:
-                query_pose_idxs = self.config_yaml.AGENT_0.QUERY_POSITION_IDXS
-                self.gt_rirs_mags, self.gt_rirs_phases = self.generate_gt_RIRs(query_pose_idxs)
-                self.query_poses = []
-                for query in query_pose_idxs:
-                    pose = np.array(self.compute_relative_pose(current_pose=query, ref_pose=self.reference_pose)).astype("float32")
-                    self.query_poses.append(pose)
+            #self.subgraph_index = 2 # only use if using that one scene
+            if (self.current_scene_name, self.subgraph_index) not in self.scene_to_query_idx_mapping.keys():
+                self._arr_query_poses_per_scene[self.current_scene_name][self.subgraph_index] =\
+                    np.array(self._arr_query_poses_per_scene[self.current_scene_name][self.subgraph_index])
+                num_scene_arbitrary_rir_poses = self._arr_query_poses_per_scene[self.current_scene_name][self.subgraph_index].shape[0]
+                if self.split == "train":
+                    #generate random pose idxs
+                    if self.max_query_length > num_scene_arbitrary_rir_poses:
+                        query_pose_idxs = torch.multinomial(torch.ones(num_scene_arbitrary_rir_poses) / num_scene_arbitrary_rir_poses,
+                                                            num_scene_arbitrary_rir_poses).tolist()
+                        query_pose_idxs += torch.multinomial(torch.ones(num_scene_arbitrary_rir_poses) / num_scene_arbitrary_rir_poses,
+                                                            self.max_query_length - num_scene_arbitrary_rir_poses,
+                                                            replacement=True).tolist()
+                    else:
+                        query_pose_idxs = torch.multinomial(torch.ones(num_scene_arbitrary_rir_poses) / num_scene_arbitrary_rir_poses,
+                                                            self.max_query_length).tolist()
+                else:
+                    #load in pose idxs from disk
+                    query_pose_idxs = self.arbitrary_rir_query_pose_idxs_from_disk[0][:self.max_query_length] #TODO: Can we fix this as 0?
+                query_poses = self._arr_query_poses_per_scene[self.current_scene_name][self.subgraph_index][query_pose_idxs, :].tolist()
+                self.scene_to_query_idx_mapping[(self.current_scene_name, self.subgraph_index)] = query_poses
+            query_poses = self.scene_to_query_idx_mapping[(self.current_scene_name, self.subgraph_index)]
+
+            self.gt_rirs_mags, self.gt_rirs_phases = self.generate_gt_RIRs(query_poses)
+            self.query_poses = []
+            for query in query_poses:
+                pose = np.array(self.compute_relative_pose(current_pose=query, ref_pose=[self.config.AGENT_0.START_POSITION, self.azimuth_angle])).astype("float32")
+                self.query_poses.append(pose)            
 
         return observations
 
@@ -1519,9 +1566,9 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         self._prev_sim_obs = sim_obs
 
         # log debugging info
-        logging.debug('After taking action {}, s,r: {}, {}, orientation: {}, location: {}'.format(
+        """ logging.debug('After taking action {}, s,r: {}, {}, orientation: {}, location: {}'.format(
             action, self._source_position_index, self._receiver_position_index,
-            self.get_orientation(), self.graph.nodes[self._receiver_position_index]['point']))
+            self.get_orientation(), self.graph.nodes[self._receiver_position_index]['point'])) """
 
         #sim_obs = self._get_sim_observation()
 
@@ -1642,11 +1689,7 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         return audiogoal
 
     def get_egomap_observation(self):
-        joint_index = (self._receiver_position_index, self._rotation_angle)
-        if joint_index in self._egomap_cache[self._current_scene]:
-            return self._egomap_cache[self._current_scene][joint_index]
-        else:
-            return None
+        return None
 
     def cache_egomap_observation(self, egomap):
         self._egomap_cache[self._current_scene][(self._receiver_position_index, self._rotation_angle)] = egomap

@@ -8,15 +8,16 @@
 
 import contextlib
 import os
+import cv2
 import random
 import time
 import logging
 from collections import defaultdict, deque, Counter
 from typing import Dict, List
 import json
-import random
 import math
 import pickle
+import h5py
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,7 @@ from tqdm import tqdm
 from numpy.linalg import norm
 from gym import spaces
 from collections import defaultdict
+from einops import rearrange, asnumpy
 
 from habitat import logger, Config
 from habitat.utils.visualizations.utils import observations_to_image
@@ -170,6 +172,7 @@ class DDPPOTrainer(ActiveRIRTrainer):
         )
 
         ppo_cfg = self.config.RL.PPO
+        ans_cfg = self.config.RL.ANS
         if (
             not os.path.isdir(self.config.CHECKPOINT_FOLDER)
             and self.world_rank == 0
@@ -218,16 +221,46 @@ class DDPPOTrainer(ActiveRIRTrainer):
         self.gt_rirs_mag = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
         self.gt_rirs_phase = torch.zeros(torch.Size([self.envs.num_envs, 60, 256, 259, 2]))
         self._curr_rir_error = torch.zeros(self.envs.num_envs, 1)
+        self._prev_coverage = torch.zeros(self.envs.num_envs, 1)
+
+        M = ans_cfg.overall_map_size
+        ground_truth_states = {
+            # To measure area seen
+            "visible_occupancy": torch.zeros(
+                self.envs.num_envs, 2, M, M, device=self.device, requires_grad=False
+            ),
+        }
 
         #get initial observations
         observations_and_queries = self.envs.reset()
         observations = [self.initialize_queries_gt_rirs_and_observations(obs, i) for i, obs in enumerate(observations_and_queries)]
         batch = batch_obs(observations, device=self.device)
+        prev_pose = batch['pose'].clone()
+
+        ground_truth_states[
+            "visible_occupancy"
+        ] = self.mapper.ext_register_map(
+            ground_truth_states["visible_occupancy"],
+            batch["ego_map"].permute(0, 3, 1, 2),
+            batch["pose"],
+            prev_pose
+        )
+
+        with torch.no_grad():
+            downsampled_map = F.interpolate(ground_truth_states[
+                "visible_occupancy"
+            ],
+            size=(241, 241),
+            mode='bilinear',
+            align_corners=False)
+
+        batch['occupancy_map'] = downsampled_map.clone()
         for sensor in rollouts.observations:
             rollouts.observations[sensor][0].copy_(batch[sensor])
 
         batch = None
         observations = None
+        torch.cuda.empty_cache() #TODO: This was done for CUDA reasons. May not be necessary anymore.
 
         # episode_rewards and episode_counts accumulates over the entire training course
         episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device)
@@ -272,14 +305,16 @@ class DDPPOTrainer(ActiveRIRTrainer):
                 #collect trajectories
                 self.agent.eval()
                 for step in tqdm(range(ppo_cfg.num_steps)):
-                    delta_pth_time, delta_env_time, delta_steps = self._collect_rollout_step(
+                    delta_pth_time, delta_env_time, delta_steps, prev_pose = self._collect_rollout_step(
                         rollouts,
                         current_episode_reward,
                         current_episode_step,
                         episode_rewards,
                         episode_counts,
                         episode_steps,
-                        episode_rir_errors
+                        episode_rir_errors,
+                        ground_truth_states,
+                        prev_pose
                     )
                     pth_time += delta_pth_time
                     env_time += delta_env_time
@@ -340,6 +375,7 @@ class DDPPOTrainer(ActiveRIRTrainer):
                         for k, v in window_episode_stats if k != "rir_error"
                     }
                     deltas["rir_error"] = (window_episode_rir_error[0] - window_episode_rir_error[-1]).sum().item() if len(window_episode_rir_error) > 1 else window_episode_rir_error[0].sum().item()
+                    #deltas["rir_error"] = total_error = sum(tensor.sum() for tensor in window_episode_rir_error).item()
                     deltas["count"] = max(deltas["count"], 1.0)
 
                     # this reward is averaged over all the episodes happened during window_size updates
