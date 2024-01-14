@@ -6,4 +6,5 @@ runs
 runs_eval
 *.txt
 *.pkl
+*.npy
 
