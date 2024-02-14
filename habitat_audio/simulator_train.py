@@ -1431,13 +1431,18 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         # Encapsule data under Observations class
         observations = self._sensor_suite.get_observations(sim_obs)
 
-        #TODO: change this away from SS 1.0 queries, and do not restrict it by subgraph.
+        #TODO: change this away from SS 1.0 queries
         if self._get_queries_and_RIRs:
-            #self.subgraph_index = 2 # only use if using that one scene
-            if (self.current_scene_name, self.subgraph_index) not in self.scene_to_query_idx_mapping.keys():
-                self._arr_query_poses_per_scene[self.current_scene_name][self.subgraph_index] =\
-                    np.array(self._arr_query_poses_per_scene[self.current_scene_name][self.subgraph_index])
-                num_scene_arbitrary_rir_poses = self._arr_query_poses_per_scene[self.current_scene_name][self.subgraph_index].shape[0]
+            if self.current_scene_name not in self.scene_to_query_idx_mapping.keys():
+                subgraphs = list(self._arr_query_poses_per_scene[self.current_scene_name].keys())
+                all_queries = []
+                for subg in subgraphs:
+                    self._arr_query_poses_per_scene[self.current_scene_name][subg] =\
+                        np.array(self._arr_query_poses_per_scene[self.current_scene_name][subg])
+                    all_queries.append(self._arr_query_poses_per_scene[self.current_scene_name][subg])
+                all_queries = np.concatenate(all_queries, axis=0)
+                np.random.shuffle(all_queries)
+                num_scene_arbitrary_rir_poses = all_queries.shape[0]
                 if self.split == "train":
                     #generate random pose idxs
                     if self.max_query_length > num_scene_arbitrary_rir_poses:
@@ -1451,10 +1456,26 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
                                                             self.max_query_length).tolist()
                 else:
                     #load in pose idxs from disk
-                    query_pose_idxs = self.arbitrary_rir_query_pose_idxs_from_disk[0][:self.max_query_length] #TODO: Can we fix this as 0?
-                query_poses = self._arr_query_poses_per_scene[self.current_scene_name][self.subgraph_index][query_pose_idxs, :].tolist()
-                self.scene_to_query_idx_mapping[(self.current_scene_name, self.subgraph_index)] = query_poses
-            query_poses = self.scene_to_query_idx_mapping[(self.current_scene_name, self.subgraph_index)]
+                    query_pose_idxs = self.arbitrary_rir_query_pose_idxs_from_disk[0][:self.max_query_length]
+                valid_indices = set(range(num_scene_arbitrary_rir_poses))
+                valid_indices -= set(query_pose_idxs)
+                corrected_indices = []
+                for idx in query_pose_idxs:
+                    if idx < num_scene_arbitrary_rir_poses:
+                        # Index is valid
+                        corrected_indices.append(idx)
+                    else:
+                        # Index is invalid, choose a random valid index
+                        if valid_indices:
+                            new_idx = np.random.choice(list(valid_indices))
+                            corrected_indices.append(new_idx)
+                            valid_indices.remove(new_idx)
+                        else:
+                            raise IndexError("Not enough unique replacement indices available.")
+                corrected_indices = np.array(corrected_indices)
+                query_poses = all_queries[corrected_indices, :].tolist()
+                self.scene_to_query_idx_mapping[self.current_scene_name] = query_poses
+            query_poses = self.scene_to_query_idx_mapping[self.current_scene_name]
 
             self.gt_rirs_mags, self.gt_rirs_phases = self.generate_gt_RIRs(query_poses)
             self.query_poses = []

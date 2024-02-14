@@ -132,12 +132,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 curr_rir_error = self._curr_rir_error[env_index]
             else:
                 curr_rir_error = np.abs(np.array(
-                    self._get_rir_error(prev_observations, len(prev_observations), env_index)[0]['stft_l1_distance']
+                    self._get_rir_error(prev_observations, len(prev_observations), env_index)[0][self.config.RL.RIR_REWARD_METRIC]
                 )).mean()
 
             if curr_obs is not None:
                 next_rir_error = np.abs(np.array(
-                    self._get_rir_error(prev_observations, len(prev_observations)+1, env_index, curr_obs=curr_obs)[0]['stft_l1_distance']
+                    self._get_rir_error(prev_observations, len(prev_observations)+1, env_index, curr_obs=curr_obs)[0][self.config.RL.RIR_REWARD_METRIC]
                 )).mean()
             else:
                 next_rir_error = 0
@@ -154,14 +154,14 @@ class ActiveRIRTrainer(BaseRLTrainer):
         if self.config.RL.USE_EARLY_ANNEALING and episode_step < self.penalty_annealing_steps:
             initial_penalty = self.early_sampling_penalty #removed temporal annealing: * (1-self.num_updates/self.config.NUM_UPDATES)
             current_penalty = initial_penalty #removed spatial annealing: - initial_penalty * (episode_step / self.penalty_annealing_steps)
-            if action == 3 or action == 4 or action == 5:
+            if action in (3,4,5):
                 reward -= current_penalty
             current_penalty = None
             
         if self.config.RL.USE_COOLDOWN_ANNEALING:
             #removed temporal annealing: current_cooldown_window = max(10,int(self.config.RL.SAMPLING_COOLDOWN_PERIOD*(1-(self.num_updates/self.config.NUM_UPDATES))))
             current_cooldown_window = self.config.RL.SAMPLING_COOLDOWN_PERIOD
-            if action == 3 or action == 4 or action == 5:
+            if action in (3,4,5):
                 if self.cooldown_timer > 0:
                     reward -= self.cooldown_penalty
 
@@ -259,7 +259,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             pred_spect_mag = pred_spect_mag.detach().cpu()
 
             eval_metrics_batch = compute_spect_metrics(
-                                metric_types=['stft_l1_distance'] if not return_all_metrics else self.config.UniformContextSampler.EvalMetrics.types,
+                                metric_types=[self.config.RL.RIR_REWARD_METRIC] if not return_all_metrics else self.config.UniformContextSampler.EvalMetrics.types,
                                 gt_spect_mag=gt_rirs_mag,
                                 gt_spect_phase=gt_rirs_phase,
                                 pred_spect_mag=pred_spect_mag,
@@ -376,7 +376,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         for i, done in enumerate(dones):
             if done:
                 mask_size = min(20, len(self.context_observations[i]))
-                episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
+                episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0][self.config.RL.RIR_REWARD_METRIC]).mean()
                 observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
                 rewards[i] = 0.0
 
@@ -898,6 +898,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
             device=self.device,
         )
 
+        self.sampling_timestamps = [[] for _ in range(self.envs.num_envs)]
+
         if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
             self.intermediate_rir_errors = [defaultdict(list) for _ in range(self.config.TEST_EPISODE_COUNT)]
         if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
@@ -935,7 +937,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
                 prev_actions.copy_(actions)
 
-            outputs = self.envs.step([a[0].item() for a in actions])
+            action_data = [{"action": a[0].item(), "uniform_sample": self.config.UNIFORM_SAMPLE, "max_ep_steps": self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS} for a in actions]
+            outputs = self.envs.step(action_data)
 
             observations, rewards, dones, infos = [
                 list(x) for x in zip(*outputs)
@@ -945,7 +948,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             for i, done in enumerate(dones):
                 if done:
                     mask_size = min(20, len(self.context_observations[i]))
-                    episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
+                    episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0][self.config.RL.RIR_REWARD_METRIC]).mean()
                     if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
                         self.prev_ref_pose = self.ref_pose
                     observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i, reset_context_and_queries=False)
@@ -961,9 +964,13 @@ class ActiveRIRTrainer(BaseRLTrainer):
                         if current_episode_step[i] != 0 and current_episode_step[i] % (self.config.TASK_CONFIG.ENVIRONMENT.MAX_EPISODE_STEPS // 20) == 0 and len(self.context_observations[i]) < 20:
                             context_obs = {k: v[i].cpu() for k, v in batch.items()}
                             self.context_observations[i].append(context_obs)
+                            self.sampling_timestamps[i].append(current_episode_step[i].item())
                     elif (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
                         context_obs = {k: v[i].cpu() for k, v in batch.items()}
                         self.context_observations[i].append(context_obs)
+                        self.sampling_timestamps[i].append(current_episode_step[i].item())
+
+                        #TODO: sampling_timestamps only adds 19 timestamps, either first or last is not being added. Fix.
 
                     if self.config.TEST_REWARD_ZERO:
                         rewards[i] = 0.0
@@ -988,7 +995,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     vis_occ_rgb = convert_gt2channel_to_gtrgb(np.transpose(visible_occupancy, (1, 2, 0)))
                     H = frame.shape[0]
                     visible_occupancy_vis = generate_topdown_allocentric_map(
-                        visible_occupancy, #TO DO: replace with environment_layout
+                        visible_occupancy, #TODO: replace with environment_layout (???)
                         visible_occupancy,
                         thresh_explored=ans_cfg.thresh_explored,
                         thresh_obstacle=ans_cfg.thresh_obstacle,
@@ -1054,7 +1061,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
                         episode_stats[metric] = np.array(spect_metrics[metric]).mean()
                     logging.debug(episode_stats)
                     current_episode_reward[i] = 0
-                    current_episode_step[i] = 0
 
                     if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS or self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
                         if self.config.SAVE_INTERMEDIATE_RIR_ERRORS:
@@ -1062,6 +1068,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
                             for n in range(len(self.context_observations[i])):
                                 self.intermediate_rir_errors[len(stats_episodes)]['metrics'].append(self._get_rir_error(self.context_observations[i], n+1, i, return_all_metrics=True)[0])
                             self.intermediate_rir_errors[len(stats_episodes)]['episode'] = (current_episodes[i].scene_id, current_episodes[i].episode_id)
+                            self.intermediate_rir_errors[len(stats_episodes)]['timestamps'] = self.sampling_timestamps[i]
+                            self.sampling_timestamps[i] = []
                             print("done")
                             
                         if self.config.SAVE_INTERMEDIATE_FS_RIR_ERRORS:
@@ -1078,6 +1086,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     with open(os.path.join(self.config.TENSORBOARD_DIR, "context_visualization.pkl"), 'wb') as file:
                         combined_data = (self.context_observations[i], self.query_positions[i], preds)
                         pickle.dump(combined_data, file)
+                    current_episode_step[i] = 0
                     self.reset_and_initialize_context(observations[i], env_index=i)
                     # use scene_id + episode_id as unique id for storing stats
                     stats_episodes[
@@ -1191,12 +1200,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
                                   checkpoint_index)
 
         #save episode global maps
-        if len(self.config.VIDEO_OPTION) > 0:
+        """ if len(self.config.VIDEO_OPTION) > 0:
             per_episode_maps = np.stack(episode_visualization_maps, axis=0)
             h5py_save_path = f"{config.TENSORBOARD_DIR}/visualized_maps.h5"
             h5file = h5py.File(h5py_save_path, "w")
             h5file.create_dataset("maps", data=per_episode_maps)
-            h5file.close()
+            h5file.close() """
 
         self.envs.close()
 

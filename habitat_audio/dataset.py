@@ -176,11 +176,11 @@ class ExplorationDataset(Dataset):
         episode_cnt = 0
         all_scene_eps = deserialized["episodes"]
         if "train" in self._config.SPLIT:
-            max_eps = 5000
+            max_eps = self._config.TRAIN_MAX_EPS_PER_SCENE
         elif "val" in self._config.SPLIT:
-            max_eps = 20
+            max_eps = self._config.VAL_MAX_EPS_PER_SCENE
         else:
-            max_eps = 5
+            max_eps = self._config.TEST_MAX_EPS_PER_SCENE
         random.shuffle(all_scene_eps)
         all_scene_eps = all_scene_eps[:max_eps]
 

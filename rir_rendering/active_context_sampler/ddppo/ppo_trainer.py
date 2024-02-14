@@ -128,14 +128,23 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
     def get_reward(self, prev_observations, env_index, vis_occ, curr_obs=None, use_sparse_reward=False, episode_step=None, action=None):
         reward = 0.0
+        reward_dict = {}
 
         if len(prev_observations) == 20:
-            return reward
+            if self.config.RL.WITH_NOVELTY_REWARD:
+                reward_dict['Novelty'] = 0.0
+            if self.config.RL.WITH_COVERAGE_REWARD:
+                reward_dict['Coverage'] = 0.0
+            if self.config.RL.WITH_RIR_REWARD:
+                reward_dict['Acoustic'] = 0.0
+            return reward, reward_dict
 
         if self.config.RL.WITH_NOVELTY_REWARD:
             novelty_reward = self.get_novelty_reward(env_index, curr_obs)
+            novelty_reward = novelty_reward.item() if torch.is_tensor(novelty_reward) else novelty_reward
             print("novelty reward:", novelty_reward)
             reward += novelty_reward
+            reward_dict['Novelty'] = novelty_reward
 
         if self.config.RL.WITH_COVERAGE_REWARD:
             curr_coverage = vis_occ[env_index].sum().item() #TODO: Determine if we should be only summing channel 1 or 2 of vis_occ, not both: (Are they opposites?)
@@ -143,9 +152,11 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 prev_coverage = self._prev_coverage[env_index] #TODO: copy self._curr_rir_error format
             else:
                 prev_coverage = 0.0
-            coverage_reward = (curr_coverage - prev_coverage)/1000.0 #TODO: set scale (1000.0) of this in config
+            coverage_reward = (curr_coverage - prev_coverage)/500.0 #TODO: set scale (500.0) of this in config
+            coverage_reward = coverage_reward.item() if torch.is_tensor(coverage_reward) else coverage_reward
             print("coverage reward:", coverage_reward)
             reward += coverage_reward
+            reward_dict['Coverage'] = coverage_reward
             self._prev_coverage[env_index] = curr_coverage
             
         if self.config.RL.WITH_RIR_REWARD:
@@ -153,12 +164,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 curr_rir_error = self._curr_rir_error[env_index]
             else:
                 curr_rir_error = np.abs(np.array(
-                    self._get_rir_error(prev_observations, len(prev_observations), env_index)[0]['stft_l1_distance']
+                    self._get_rir_error(prev_observations, len(prev_observations), env_index)[0][self.config.RL.RIR_REWARD_METRIC]
                 )).mean()
 
             if curr_obs is not None:
                 next_rir_error = np.abs(np.array(
-                    self._get_rir_error(prev_observations, len(prev_observations)+1, env_index, curr_obs=curr_obs)[0]['stft_l1_distance']
+                    self._get_rir_error(prev_observations, len(prev_observations)+1, env_index, curr_obs=curr_obs)[0][self.config.RL.RIR_REWARD_METRIC]
                 )).mean()
             else:
                 next_rir_error = 0
@@ -166,8 +177,10 @@ class ActiveRIRTrainer(BaseRLTrainer):
             ar_reward = (
                 curr_rir_error - next_rir_error
             ) * self.config.RL.MEASUREMENT_RIR_REWARD_SCALE
+            ar_reward = ar_reward.item() if torch.is_tensor(ar_reward) else ar_reward
             print("acoustic reward:", ar_reward)
             reward += ar_reward
+            reward_dict['Acoustic'] = ar_reward
             if use_sparse_reward: #TODO: Determine if this is correct still: Do a closer look
                 reward += -self.config.RL.SPARSE_RIR_REWARD_SCALE * next_rir_error
 
@@ -176,23 +189,26 @@ class ActiveRIRTrainer(BaseRLTrainer):
         if self.config.RL.USE_EARLY_ANNEALING and episode_step < self.penalty_annealing_steps:
             initial_penalty = self.early_sampling_penalty #if temporal annealing, add: * (1-self.num_updates/self.config.NUM_UPDATES)
             current_penalty = initial_penalty #if spatial annealing, add: - initial_penalty * (episode_step / self.penalty_annealing_steps)
-            if action == 3 or action == 4 or action == 5:
+            if action in (3,4,5):
                 reward -= current_penalty
             current_penalty = None
             
         if self.config.RL.USE_COOLDOWN_ANNEALING:
             #removed temporal annealing: current_cooldown_window = max(10,int(self.config.RL.SAMPLING_COOLDOWN_PERIOD*(1-(self.num_updates/self.config.NUM_UPDATES))))
             current_cooldown_window = self.config.RL.SAMPLING_COOLDOWN_PERIOD
-            if action == 3 or action == 4 or action == 5:
+            if action in (3,4,5):
                 if self.cooldown_timer > 0:
+                    print("total reward:")
+                    print(reward)
                     reward -= self.cooldown_penalty
-
+                    print("cooldown penalty:")
+                    print(self.cooldown_penalty)
                 #reset the cooldown timer  
                 self.cooldown_timer = current_cooldown_window
             else:
                 self.cooldown_timer = max(0, self.cooldown_timer - 1)
 
-        return reward
+        return reward, reward_dict
     
     def _get_rir_error(self, prev_observations, current_episode_step, env_index, curr_obs=None, return_all_metrics=False):
         
@@ -281,7 +297,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
             pred_spect_mag = pred_spect_mag.detach().cpu()
 
             eval_metrics_batch = compute_spect_metrics(
-                                metric_types=['stft_l1_distance'] if not return_all_metrics else self.config.UniformContextSampler.EvalMetrics.types,
+                                metric_types=[self.config.RL.RIR_REWARD_METRIC] if not return_all_metrics else self.config.UniformContextSampler.EvalMetrics.types,
                                 gt_spect_mag=gt_rirs_mag,
                                 gt_spect_phase=gt_rirs_phase,
                                 pred_spect_mag=pred_spect_mag,
@@ -360,8 +376,10 @@ class ActiveRIRTrainer(BaseRLTrainer):
         return torch.load(checkpoint_path, *args, **kwargs)
 
     def _collect_rollout_step(
-        self, rollouts, current_episode_reward, current_episode_step, episode_rewards,
-            episode_counts, episode_steps, episode_rir_errors, ground_truth_states, prev_pose
+        self, rollouts, current_episode_reward, current_episode_novelty_reward, current_episode_coverage_reward,
+            current_episode_acoustic_reward, current_episode_step, episode_rewards, episode_novelty_rewards,
+            episode_coverage_rewards, episode_acoustic_rewards, episode_counts, episode_steps, episode_rir_errors,
+            ground_truth_states, prev_pose
     ):
         pth_time = 0.0
         env_time = 0.0
@@ -400,14 +418,22 @@ class ActiveRIRTrainer(BaseRLTrainer):
             print(error_message)
             print(error_traceback)
         observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
+        rewards_dict = [{} for _ in range(len(rewards))] #TODO: check this for issues
 
         episode_rir_error = [0] * len(dones)
         for i, done in enumerate(dones):
             if done:
                 mask_size = min(20, len(self.context_observations[i]))
-                episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0]['stft_l1_distance']).mean()
+                episode_rir_error[i] = np.array(self._get_rir_error(self.context_observations[i], mask_size, i)[0][self.config.RL.RIR_REWARD_METRIC]).mean()
                 observations[i] = self.initialize_queries_gt_rirs_and_observations(observations[i], i)
                 rewards[i] = 0.0
+                rewards_dict[i] = {}
+                if self.config.RL.WITH_NOVELTY_REWARD:
+                    rewards_dict[i]['Novelty'] = 0.0
+                if self.config.RL.WITH_COVERAGE_REWARD:
+                    rewards_dict[i]['Coverage'] = 0.0
+                if self.config.RL.WITH_RIR_REWARD:
+                    rewards_dict[i]['Acoustic'] = 0.0
 
                 #reset global map with new initial ego_map observations
                 for key in ground_truth_states:
@@ -423,14 +449,24 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     if (actions[i][0].item() == 3) or (actions[i][0].item() == 4) or (actions[i][0].item() == 5):
                         context_obs = {k: v[i].cpu() for k, v in step_observation.items()}
                         self.context_observations[i].append(context_obs)
-                rewards[i] = self.get_reward(self.context_observations[i], i, ground_truth_states['visible_occupancy'].clone(), curr_obs=observations[i],
+                reward_outputs = self.get_reward(self.context_observations[i], i, ground_truth_states['visible_occupancy'].clone(), curr_obs=observations[i],
                                              use_sparse_reward=(len(self.context_observations[i])==self.config.TASK_CONFIG.ENVIRONMENT.MAX_CONTEXT_LENGTH-1),
                                              episode_step=current_episode_step[i].item(), action=actions[i][0].item())
+
+                rewards[i], rewards_dict[i] = reward_outputs
 
         logging.debug('Reward: {}'.format(rewards[0]))
 
         env_time += time.time() - t_step_env
 
+        all_rewards = {}
+        for d in rewards_dict:
+            for key in d:
+                if key not in all_rewards:
+                    all_rewards[key] = []
+                all_rewards[key].append(d[key])
+        for key in all_rewards:
+            all_rewards[key] = torch.tensor(all_rewards[key], dtype=torch.float).view(-1, 1) #, device=current_episode_reward.device
         
         t_update_stats = time.time()
         rewards = torch.tensor(rewards, dtype=torch.float, device=current_episode_reward.device)
@@ -465,16 +501,28 @@ class ActiveRIRTrainer(BaseRLTrainer):
         )
 
         current_episode_reward += rewards
+        if self.config.RL.WITH_NOVELTY_REWARD:
+            current_episode_novelty_reward += all_rewards["Novelty"]
+        if self.config.RL.WITH_COVERAGE_REWARD:
+            current_episode_coverage_reward += all_rewards["Coverage"]
+        if self.config.RL.WITH_RIR_REWARD:
+            current_episode_acoustic_reward += all_rewards["Acoustic"]
         current_episode_step += 1
         # current_episode_reward is accumulating rewards across multiple updates,
         # as long as the current episode is not finished
         # the current episode reward is added to the episode rewards only if the current episode is done
         # the episode count will also increase by 1
         episode_rewards += (1 - masks) * current_episode_reward
+        episode_novelty_rewards += (1 - masks.cpu()) * current_episode_novelty_reward
+        episode_coverage_rewards += (1 - masks.cpu()) * current_episode_coverage_reward
+        episode_acoustic_rewards += (1 - masks.cpu()) * current_episode_acoustic_reward
         episode_steps += (1 - masks) * current_episode_step
         episode_counts += 1 - masks
         episode_rir_errors += (1 - masks) * episode_rir_error
         current_episode_reward *= masks
+        current_episode_novelty_reward *= masks.cpu()
+        current_episode_coverage_reward *= masks.cpu()
+        current_episode_acoustic_reward *= masks.cpu()
         current_episode_step *= masks
 
         rollouts.insert(
@@ -627,12 +675,21 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         # episode_rewards and episode_counts accumulates over the entire training course
         episode_rewards = torch.zeros(self.envs.num_envs, 1)
+        #episode_novelty_rewards = torch.zeros(self.envs.num_envs, 1)
+        #episode_coverage_rewards = torch.zeros(self.envs.num_envs, 1)
+        #episode_acoustic_rewards = torch.zeros(self.envs.num_envs, 1)
         episode_steps = torch.zeros(self.envs.num_envs, 1)
         episode_counts = torch.zeros(self.envs.num_envs, 1)
         episode_rir_errors = torch.zeros(self.envs.num_envs, 1)
         current_episode_reward = torch.zeros(self.envs.num_envs, 1)
+        #current_episode_novelty_reward = torch.zeros(self.envs.num_envs, 1)
+        #current_episode_coverage_reward = torch.zeros(self.envs.num_envs, 1)
+        #current_episode_acoustic_reward = torch.zeros(self.envs.num_envs, 1)
         current_episode_step = torch.zeros(self.envs.num_envs, 1)
         window_episode_reward = deque(maxlen=ppo_cfg.reward_window_size)
+        #window_episode_novelty_reward = deque(maxlen=ppo_cfg.reward_window_size)
+        #window_episode_coverage_reward = deque(maxlen=ppo_cfg.reward_window_size)
+        #window_episode_acoustic_reward = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_step = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_counts = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_rir_error = deque(maxlen=ppo_cfg.reward_window_size)
@@ -667,8 +724,14 @@ class ActiveRIRTrainer(BaseRLTrainer):
                     delta_pth_time, delta_env_time, delta_steps, prev_pose = self._collect_rollout_step(
                         rollouts,
                         current_episode_reward,
+                        current_episode_novelty_reward,
+                        current_episode_coverage_reward,
+                        current_episode_acoustic_reward,
                         current_episode_step,
                         episode_rewards,
+                        episode_novelty_rewards,
+                        episode_coverage_rewards,
+                        episode_acoustic_rewards,
                         episode_counts,
                         episode_steps,
                         episode_rir_errors,
@@ -686,14 +749,17 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 pth_time += delta_pth_time
 
                 window_episode_reward.append(episode_rewards.clone())
+                window_episode_novelty_reward.append(episode_novelty_rewards.clone())
+                window_episode_coverage_reward.append(episode_coverage_rewards.clone())
+                window_episode_acoustic_reward.append(episode_acoustic_rewards.clone())
                 window_episode_step.append(episode_steps.clone())
                 window_episode_counts.append(episode_counts.clone())
                 window_episode_rir_error.append(episode_rir_errors.clone())
 
                 #losses = [value_loss, action_loss, dist_entropy]
                 stats = zip(
-                    ["count", "reward", "step", "rir_error"],
-                    [window_episode_counts, window_episode_reward, window_episode_step, window_episode_rir_error],
+                    ["count", "reward", "novelty_reward", "coverage_reward", "acoustic_reward", "step", "rir_error"],
+                    [window_episode_counts, window_episode_reward, window_episode_novelty_reward, window_episode_coverage_reward, window_episode_acoustic_reward, window_episode_step, window_episode_rir_error],
                 )
                 deltas = {
                     k: (
@@ -712,6 +778,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 # approximately number of steps is window_size * num_steps
                 if update % 10 == 0:
                     writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
+                    if self.config.RL.WITH_NOVELTY_REWARD:
+                        writer.add_scalar("Environment/Novelty_reward", deltas["novelty_reward"] / deltas["count"], count_steps)
+                    if self.config.RL.WITH_COVERAGE_REWARD:
+                        writer.add_scalar("Environment/Coverage_reward", deltas["coverage_reward"] / deltas["count"], count_steps)
+                    if self.config.RL.WITH_RIR_REWARD:
+                        writer.add_scalar("Environment/Acoustic_reward", deltas["acoustic_reward"] / deltas["count"], count_steps)
                     writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
                     writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
                     writer.add_scalar('Policy/Value_Loss', value_loss, count_steps)

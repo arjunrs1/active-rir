@@ -263,16 +263,26 @@ class DDPPOTrainer(ActiveRIRTrainer):
         torch.cuda.empty_cache() #TODO: This was done for CUDA reasons. May not be necessary anymore.
 
         # episode_rewards and episode_counts accumulates over the entire training course
-        episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_steps = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_counts = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        episode_rir_errors = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device)
-        current_episode_step = torch.zeros(self.envs.num_envs, 1, device=self.device)
+        episode_rewards = torch.zeros(self.envs.num_envs, 1, device=self.device, requires_grad=False) #TODO: remove requires_grad=False
+        episode_steps = torch.zeros(self.envs.num_envs, 1, device=self.device, requires_grad=False)
+        episode_counts = torch.zeros(self.envs.num_envs, 1, device=self.device, requires_grad=False)
+        episode_rir_errors = torch.zeros(self.envs.num_envs, 1, device=self.device, requires_grad=False)
+        current_episode_reward = torch.zeros(self.envs.num_envs, 1, device=self.device, requires_grad=False)
+        current_episode_step = torch.zeros(self.envs.num_envs, 1, device=self.device, requires_grad=False)
         window_episode_reward = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_step = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_counts = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_rir_error = deque(maxlen=ppo_cfg.reward_window_size)
+
+        episode_novelty_rewards = torch.zeros(self.envs.num_envs, 1)
+        episode_coverage_rewards = torch.zeros(self.envs.num_envs, 1)
+        episode_acoustic_rewards = torch.zeros(self.envs.num_envs, 1)
+        current_episode_novelty_reward = torch.zeros(self.envs.num_envs, 1)
+        current_episode_coverage_reward = torch.zeros(self.envs.num_envs, 1)
+        current_episode_acoustic_reward = torch.zeros(self.envs.num_envs, 1)
+        window_episode_novelty_reward = deque(maxlen=ppo_cfg.reward_window_size)
+        window_episode_coverage_reward = deque(maxlen=ppo_cfg.reward_window_size)
+        window_episode_acoustic_reward = deque(maxlen=ppo_cfg.reward_window_size)
 
         t_start = time.time()
         env_time = 0
@@ -308,8 +318,14 @@ class DDPPOTrainer(ActiveRIRTrainer):
                     delta_pth_time, delta_env_time, delta_steps, prev_pose = self._collect_rollout_step(
                         rollouts,
                         current_episode_reward,
+                        current_episode_novelty_reward,
+                        current_episode_coverage_reward,
+                        current_episode_acoustic_reward,
                         current_episode_step,
                         episode_rewards,
+                        episode_novelty_rewards,
+                        episode_coverage_rewards,
+                        episode_acoustic_rewards,
                         episode_counts,
                         episode_steps,
                         episode_rir_errors,
@@ -345,12 +361,15 @@ class DDPPOTrainer(ActiveRIRTrainer):
 
                 window_episode_counts.append(stats[0].clone())
                 window_episode_reward.append(stats[1].clone())
+                window_episode_novelty_reward.append(episode_novelty_rewards.clone())
+                window_episode_coverage_reward.append(episode_coverage_rewards.clone())
+                window_episode_acoustic_reward.append(episode_acoustic_rewards.clone())
                 window_episode_step.append(stats[2].clone())
                 window_episode_rir_error.append(stats[3].clone())
 
                 window_episode_stats = zip(
-                        ["count", "reward", "step", "rir_error"],
-                        [window_episode_counts, window_episode_reward, window_episode_step, window_episode_rir_error],
+                    ["count", "reward", "novelty_reward", "coverage_reward", "acoustic_reward", "step", "rir_error"],
+                    [window_episode_counts, window_episode_reward, window_episode_novelty_reward, window_episode_coverage_reward, window_episode_acoustic_reward, window_episode_step, window_episode_rir_error],
                 )
 
                 stats = torch.tensor(
@@ -382,6 +401,12 @@ class DDPPOTrainer(ActiveRIRTrainer):
                     # approximately number of steps is window_size * num_steps
                     if update % 10 == 0:
                         writer.add_scalar("Environment/Reward", deltas["reward"] / deltas["count"], count_steps)
+                        if self.config.RL.WITH_NOVELTY_REWARD:
+                            writer.add_scalar("Environment/Novelty_reward", deltas["novelty_reward"] / deltas["count"], count_steps)
+                        if self.config.RL.WITH_COVERAGE_REWARD:
+                            writer.add_scalar("Environment/Coverage_reward", deltas["coverage_reward"] / deltas["count"], count_steps)
+                        if self.config.RL.WITH_RIR_REWARD:
+                            writer.add_scalar("Environment/Acoustic_reward", deltas["acoustic_reward"] / deltas["count"], count_steps)
                         writer.add_scalar("Environment/Episode_length", deltas["step"] / deltas["count"], count_steps)
                         writer.add_scalar("Environment/RIR_Error", deltas["rir_error"] / deltas["count"], count_steps)
                         writer.add_scalar('Policy/Value_Loss', losses[0], count_steps)
