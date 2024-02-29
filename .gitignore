@@ -7,4 +7,5 @@ runs_eval
 *.txt
 *.pkl
 *.npy
+*.png
 
