@@ -141,25 +141,26 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         if self.config.RL.WITH_NOVELTY_REWARD:
             novelty_reward = self.get_novelty_reward(env_index, curr_obs)
-            novelty_reward = novelty_reward.item() if torch.is_tensor(novelty_reward) else novelty_reward
+            novelty_reward = (novelty_reward.item() if torch.is_tensor(novelty_reward) else novelty_reward) * self.config.RL.NOVELTY_REWARD_SCALE
             print("novelty reward:", novelty_reward)
             reward += novelty_reward
             reward_dict['Novelty'] = novelty_reward
 
         if self.config.RL.WITH_COVERAGE_REWARD:
             curr_coverage = vis_occ[env_index].sum().item() #TODO: Determine if we should be only summing channel 1 or 2 of vis_occ, not both: (Are they opposites?)
-            if len(prev_observations) != 1:
+            if episode_step != 0.0:
                 prev_coverage = self._prev_coverage[env_index] #TODO: copy self._curr_rir_error format
             else:
                 prev_coverage = 0.0
-            coverage_reward = (curr_coverage - prev_coverage)/500.0 #TODO: set scale (500.0) of this in config
+            coverage_reward = (curr_coverage - prev_coverage) * self.config.RL.COVERAGE_REWARD_SCALE / max(prev_coverage, 500.0)
             coverage_reward = coverage_reward.item() if torch.is_tensor(coverage_reward) else coverage_reward
             print("coverage reward:", coverage_reward)
             reward += coverage_reward
             reward_dict['Coverage'] = coverage_reward
             self._prev_coverage[env_index] = curr_coverage
-            
-        if self.config.RL.WITH_RIR_REWARD:
+               
+        #only add acoustic reward for sampling action      
+        if self.config.RL.WITH_RIR_REWARD and action in (3,4,5):
             if len(prev_observations) != 1:
                 curr_rir_error = self._curr_rir_error[env_index]
             else:
@@ -177,6 +178,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
             ar_reward = (
                 curr_rir_error - next_rir_error
             ) * self.config.RL.MEASUREMENT_RIR_REWARD_SCALE
+
+            ar_reward = np.sign(ar_reward) * np.log1p(np.abs(ar_reward))
             ar_reward = ar_reward.item() if torch.is_tensor(ar_reward) else ar_reward
             print("acoustic reward:", ar_reward)
             reward += ar_reward
@@ -185,6 +188,8 @@ class ActiveRIRTrainer(BaseRLTrainer):
                 reward += -self.config.RL.SPARSE_RIR_REWARD_SCALE * next_rir_error
 
             self._curr_rir_error[env_index] = next_rir_error
+        elif self.config.RL.WITH_RIR_REWARD:
+            reward_dict['Acoustic'] = 0.0
 
         if self.config.RL.USE_EARLY_ANNEALING and episode_step < self.penalty_annealing_steps:
             initial_penalty = self.early_sampling_penalty #if temporal annealing, add: * (1-self.num_updates/self.config.NUM_UPDATES)
@@ -675,21 +680,12 @@ class ActiveRIRTrainer(BaseRLTrainer):
 
         # episode_rewards and episode_counts accumulates over the entire training course
         episode_rewards = torch.zeros(self.envs.num_envs, 1)
-        #episode_novelty_rewards = torch.zeros(self.envs.num_envs, 1)
-        #episode_coverage_rewards = torch.zeros(self.envs.num_envs, 1)
-        #episode_acoustic_rewards = torch.zeros(self.envs.num_envs, 1)
         episode_steps = torch.zeros(self.envs.num_envs, 1)
         episode_counts = torch.zeros(self.envs.num_envs, 1)
         episode_rir_errors = torch.zeros(self.envs.num_envs, 1)
         current_episode_reward = torch.zeros(self.envs.num_envs, 1)
-        #current_episode_novelty_reward = torch.zeros(self.envs.num_envs, 1)
-        #current_episode_coverage_reward = torch.zeros(self.envs.num_envs, 1)
-        #current_episode_acoustic_reward = torch.zeros(self.envs.num_envs, 1)
         current_episode_step = torch.zeros(self.envs.num_envs, 1)
         window_episode_reward = deque(maxlen=ppo_cfg.reward_window_size)
-        #window_episode_novelty_reward = deque(maxlen=ppo_cfg.reward_window_size)
-        #window_episode_coverage_reward = deque(maxlen=ppo_cfg.reward_window_size)
-        #window_episode_acoustic_reward = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_step = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_counts = deque(maxlen=ppo_cfg.reward_window_size)
         window_episode_rir_error = deque(maxlen=ppo_cfg.reward_window_size)

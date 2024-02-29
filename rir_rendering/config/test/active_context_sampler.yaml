@@ -35,7 +35,7 @@ UniformContextSampler:
   log_gt_eps: 1.0e-8
 
   EvalMetrics:
-    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "rel_diff_rt_startFrom60dB", "rel_diff_edt", "diff_drr_3ms", "rel_diff_drr_3ms"] #, "diff_drr_3ms", "rel_diff_drr_3ms", "diff_ratio_lrEnergy",
+    types: ["stft_l1_distance", "diff_rt_startFrom60dB", "rel_diff_edt"] #, "diff_drr_3ms", "rel_diff_drr_3ms", "diff_ratio_lrEnergy",
 
   encode_each_modality_as_independent_context_entry: True
   append_modality_type_tag_encoding_to_each_modality_encoding: True
@@ -77,7 +77,7 @@ RL:
     max_grad_norm: 0.5
     # decide the length of history that ppo encodes
     num_steps: 150
-    hidden_size: 512
+    hidden_size: 514
     use_gae: True
     gamma: 0.99
     tau: 0.95

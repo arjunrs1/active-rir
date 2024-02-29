@@ -64,6 +64,7 @@ _C.EVAL = CN()
 _C.EVAL.SPLIT = "val"
 _C.EVAL.USE_CKPT_CONFIG = True
 _C.EVAL.DATA_PARALLEL_TRAINING = False
+_C.EVAL.USE_RANDOM_POLICY = True
 
 # -----------------------------------------------------------------------------
 # REINFORCEMENT LEARNING (RL) ENVIRONMENT CONFIG
@@ -74,8 +75,10 @@ _C.RL.SLACK_REWARD = -0.01
 _C.RL.WITH_NOVELTY_REWARD = False
 _C.RL.WITH_COVERAGE_REWARD = False
 _C.RL.WITH_RIR_REWARD = False
-_C.RL.RIR_REWARD_METRIC = "stft_l1_distance" # other options: "diff_rt_startFrom60dB", "rel_diff_rt_startFrom60dB", "rel_diff_edt", "diff_drr_3ms", "rel_diff_drr_3ms"
-_C.RL.MEASUREMENT_RIR_REWARD_SCALE = 3000.0
+_C.RL.RIR_REWARD_METRIC = "stft_l1_distance" #other options: "diff_rt_startFrom60dB", "rel_diff_rt_startFrom60dB", "rel_diff_edt", "diff_drr_3ms", "rel_diff_drr_3ms"
+_C.RL.MEASUREMENT_RIR_REWARD_SCALE = 2e5
+_C.RL.COVERAGE_REWARD_SCALE = 2e2
+_C.RL.NOVELTY_REWARD_SCALE = 10.0
 _C.RL.SPARSE_RIR_REWARD_SCALE = 1.0
 _C.RL.WITH_DISTANCE_REWARD = True
 _C.RL.DISTANCE_REWARD_SCALE = 1.0
@@ -84,7 +87,7 @@ _C.RL.USE_EARLY_ANNEALING = False
 _C.RL.EARLY_ANNEALING_FRAC = 0.2
 _C.RL.USE_COOLDOWN_ANNEALING = False
 _C.RL.SAMPLING_COOLDOWN_PERIOD = 30
-_C.RL.NOVELTY_GRID_FACTOR = 5
+_C.RL.NOVELTY_GRID_FACTOR = 1
 _C.RL.PRETRAINED_RIR_PREDICTOR_PATH = "/vision/asomaya1/active-rir/runs_eval/fs_rir/data/seen_eval_best_ckpt.pth"
 # -----------------------------------------------------------------------------
 # PROXIMAL POLICY OPTIMIZATION (PPO)
@@ -282,9 +285,21 @@ _TC.TASK.POSE_SENSOR = CN()
 _TC.TASK.POSE_SENSOR.TYPE = "ActivePoseSensor"
 _TC.TASK.POSE_SENSOR.FEATURE_SHAPE = [5]
 # -----------------------------------------------------------------------------
+# TIMESTEP SENSOR
+# -----------------------------------------------------------------------------
+_TC.TASK.TIMESTEP_SENSOR = CN()
+_TC.TASK.TIMESTEP_SENSOR.TYPE = "TimestepSensor"
+_TC.TASK.TIMESTEP_SENSOR.FEATURE_SHAPE = [1]
+# -----------------------------------------------------------------------------
+# CONTEXT LENGTH SENSOR
+# -----------------------------------------------------------------------------
+_TC.TASK.CONTEXT_LENGTH_SENSOR = CN()
+_TC.TASK.CONTEXT_LENGTH_SENSOR.TYPE = "ContextLengthSensor"
+_TC.TASK.CONTEXT_LENGTH_SENSOR.FEATURE_SHAPE = [1]
+# -----------------------------------------------------------------------------
 # environment config
 # -----------------------------------------------------------------------------
-_TC.ENVIRONMENT.MAX_EPISODE_STEPS = 100
+_TC.ENVIRONMENT.MAX_EPISODE_STEPS = 200
 _TC.ENVIRONMENT.MAX_CONTEXT_LENGTH = 100
 _TC.ENVIRONMENT.MAX_QUERY_LENGTH = 25
 _TC.ENVIRONMENT.MAX_QUERY_LENGTH_EVAL_FINETUNE_NAF = 25
@@ -307,7 +322,7 @@ _TC.ENVIRONMENT.EVAL_CONTEXT_PERCENTAGES_PATH = "data/eval_arbitraryRIRQuery_dat
 # -----------------------------------------------------------------------------
 _TC.SIMULATOR.SEED = -1
 _TC.SIMULATOR.SCENE_DATASET = "mp3d"
-_TC.SIMULATOR.MAX_EPISODE_STEPS = 100 #
+_TC.SIMULATOR.MAX_EPISODE_STEPS = 200 #
 _TC.SIMULATOR.UNIFORM_SAMPLE = False
 #_TC.SIMULATOR.GRID_SIZE = 1.0
 _TC.SIMULATOR.USE_RENDERED_OBSERVATIONS = True
@@ -370,9 +385,9 @@ _TC.TASK.GLOBALMAP_SENSOR.FEATURE_SHAPE = [2, 241, 241]
 # -----------------------------------------------------------------------------
 _TC.DATASET.VERSION = 'v1'
 _TC.DATASET.CONTINUOUS = False
-_TC.DATASET.TRAIN_MAX_EPS_PER_SCENE = 50
+_TC.DATASET.TRAIN_MAX_EPS_PER_SCENE = 100
 _TC.DATASET.VAL_MAX_EPS_PER_SCENE = 20
-_TC.DATASET.TEST_MAX_EPS_PER_SCENE = 2
+_TC.DATASET.TEST_MAX_EPS_PER_SCENE = 34
 
 def merge_from_path(config, config_paths):
 	"""

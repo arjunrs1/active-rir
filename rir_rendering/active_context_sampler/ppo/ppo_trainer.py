@@ -752,7 +752,7 @@ class ActiveRIRTrainer(BaseRLTrainer):
         random.seed(self.config.SEED)
         np.random.seed(self.config.SEED)
         torch.manual_seed(self.config.SEED)
-            
+
         # Map location CPU is almost always better than mapping to a CUDA device.
         ckpt_dict = self.load_checkpoint(checkpoint_path, map_location="cpu")
 
@@ -926,14 +926,18 @@ class ActiveRIRTrainer(BaseRLTrainer):
             current_episodes = self.envs.current_episodes()
 
             with torch.no_grad():
-                _, actions, _, test_recurrent_hidden_states, prev_obs_hidden_states = self.actor_critic.act(
-                    batch,
-                    test_recurrent_hidden_states,
-                    prev_actions,
-                    not_done_masks,
-                    prev_obs_hidden_states,
-                    deterministic=False
-                )
+
+                if self.config.EVAL.USE_RANDOM_POLICY:
+                    actions = torch.randint(0, len(config.TASK_CONFIG.TASK.POSSIBLE_ACTIONS), (1, 1)).to(self.device)
+                else:
+                    _, actions, _, test_recurrent_hidden_states, prev_obs_hidden_states = self.actor_critic.act(
+                        batch,
+                        test_recurrent_hidden_states,
+                        prev_actions,
+                        not_done_masks,
+                        prev_obs_hidden_states,
+                        deterministic=False
+                    )
 
                 prev_actions.copy_(actions)
 
@@ -970,7 +974,6 @@ class ActiveRIRTrainer(BaseRLTrainer):
                         self.context_observations[i].append(context_obs)
                         self.sampling_timestamps[i].append(current_episode_step[i].item())
 
-                        #TODO: sampling_timestamps only adds 19 timestamps, either first or last is not being added. Fix.
 
                     if self.config.TEST_REWARD_ZERO:
                         rewards[i] = 0.0
@@ -1083,9 +1086,11 @@ class ActiveRIRTrainer(BaseRLTrainer):
                                 self.intermediate_fs_rir_errors[len(stats_episodes)]['metrics'].append(self._current_measurement_error(obs, 0, return_all_metrics=True)[0])
                             self.intermediate_fs_rir_errors[len(stats_episodes)]['episode'] = (current_episodes[i].scene_id, current_episodes[i].episode_id)
 
-                    with open(os.path.join(self.config.TENSORBOARD_DIR, "context_visualization.pkl"), 'wb') as file:
-                        combined_data = (self.context_observations[i], self.query_positions[i], preds)
-                        pickle.dump(combined_data, file)
+                        scene_id = current_episodes[i].scene_id.split("/")[-1].split(".")[0]
+                        context_vis_filename = f"context_{scene_id}_{current_episodes[i].episode_id}.pkl"
+                        with open(os.path.join(self.config.TENSORBOARD_DIR, context_vis_filename), 'wb') as file:
+                            combined_data = (self.context_observations[i], self.query_positions[i], preds)
+                            pickle.dump(combined_data, file)
                     current_episode_step[i] = 0
                     self.reset_and_initialize_context(observations[i], env_index=i)
                     # use scene_id + episode_id as unique id for storing stats

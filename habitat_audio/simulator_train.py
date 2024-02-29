@@ -455,8 +455,6 @@ class SoundSpacesTeleportSim(HabitatSimAudioEnabledTrain):
         # Encapsule data under Observations class
         observations = self._sensor_suite.get_observations(sim_obs)
 
-
-    
         if self._get_queries_and_RIRs:
             query_pose_idxs = self.config_yaml.AGENT_0.QUERY_POSITION_IDXS
             self.gt_rirs_mags, self.gt_rirs_phases = self.generate_gt_RIRs(query_pose_idxs)
@@ -855,6 +853,13 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         self.points, self.graph = load_metadata(self.metadata_dir)
         for node in self.graph.nodes():
             self._position_to_index_mapping[self.position_encoding(self.graph.nodes()[node]['point'])] = node
+        
+        self._position_to_index_mapping_trunc = {}
+        for key, value in self._position_to_index_mapping.items():
+            parts = key.split('_')
+            new_key = f"{parts[0]}_{parts[2]}"  # Rebuild the key without the middle part
+            if new_key not in self._position_to_index_mapping_trunc:
+                self._position_to_index_mapping_trunc[new_key] = value
 
         if self.config.AUDIO.HAS_DISTRACTOR_SOUND:
             self._distractor_position_index = None
@@ -1281,7 +1286,7 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             binaural_rir = np.zeros((sampling_rate, 2)).astype(np.float32)
             sampling_freq = sampling_rate
         #else:
-            #NOTE: If you generate continuous sim query RIRs, then make sure to reset listener and source transform in reconfigure AFTER computing query RIRs.
+            #NOTE: If generating SS 2.0 query RIRs, then make sure to reset listener and source transform in reconfigure AFTER computing query RIRs.
             """ rec_pos = list(self.graph.nodes[receiver_location]['point'])
             rot = quat_from_angle_axis(np.deg2rad(self._compute_rotation_from_azimuth(azimuth_angle)),
                                                     np.array([0, 1, 0]))
@@ -1365,6 +1370,7 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         sig_imp = imp_full_length
         assert fs_imp == self.config_yaml.AUDIO.RIR_SAMPLING_RATE
         sig_imp = sig_imp.T
+        #TODO: Check normalization of spect here
         fft_windows_l_imp = librosa.stft(np.asfortranarray(sig_imp[0]),
                                             hop_length=self.config_yaml.AUDIO.HOP_LENGTH,
                                             n_fft=self.config_yaml.AUDIO.N_FFT,
@@ -1402,6 +1408,31 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             return self._position_to_index_mapping[self.position_encoding(position)]
         else:
             raise ValueError("Position misalignment.")
+           
+    def _position_to_closest_index(self, position):
+        closest_distance = float('inf')
+        closest_value = None
+        
+        for key in self._position_to_index_mapping.keys():
+            key_position = list(map(float, key.split('_')))
+            distance = self.euclidean_distance(position, key_position)
+            
+            if distance < closest_distance:
+                closest_distance = distance
+                closest_value = self._position_to_index_mapping[key]
+        
+        return closest_value
+
+    def euclidean_distance(self, position_a, position_b):
+        r"""
+        get euclidean distance between 2 nodes
+        :param position_a: position of 1st node
+        :param position_b: position of 2nd node
+        :return: euclidean distance between 2 nodes
+        """
+        assert len(position_a) == len(position_b) == 3
+        #assert position_a[1] == position_b[1], "height should be same for node a and b"
+        return np.power(np.power(position_a[0] - position_b[0],  2) + np.power(position_a[2] - position_b[2], 2), 0.5)
 
     def _get_sim_observation(self):
         """ joint_index = (self._receiver_position_index, self._rotation_angle)
@@ -1431,7 +1462,6 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
         # Encapsule data under Observations class
         observations = self._sensor_suite.get_observations(sim_obs)
 
-        #TODO: change this away from SS 1.0 queries
         if self._get_queries_and_RIRs:
             if self.current_scene_name not in self.scene_to_query_idx_mapping.keys():
                 subgraphs = list(self._arr_query_poses_per_scene[self.current_scene_name].keys())
@@ -1602,6 +1632,14 @@ class SoundSpacesSimActiveRIR(Simulator, ABC):
             observations['intermediate'] = intermediate_observations """
 
         return observations
+
+    def get_remaining_timesteps(self):
+        #return fractional remaining timesteps for input to policy
+        return round(1.0 - self._episode_step_count / self.config_yaml.MAX_EPISODE_STEPS, 2)
+
+    def get_remaining_observations(self):
+        #return fractional remaining observations for input to policy. Add 1 for initial non-active sample at start of episode.
+        return round(1.0 - (self._collected_context+1) / 20, 2)
 
     def get_orientation(self):
         _base_orientation = 270

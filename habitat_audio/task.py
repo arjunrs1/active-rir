@@ -308,6 +308,80 @@ class GlobalMap(Sensor):
         return np.zeros(self.config.FEATURE_SHAPE)
 
 
+@registry.register_sensor(name="TimestepSensor")
+class TimestepSensor(Sensor):
+    r"""Sensor for number of maximum number of remaining timesteps in episode.
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: 
+    Attributes:
+    """
+
+    def __init__(
+        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
+    ):
+        self._sim = sim
+        super().__init__(config=config)
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return "timestep_sensor"
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return SensorTypes.MEASUREMENT
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        assert hasattr(self.config, 'FEATURE_SHAPE')
+        sensor_shape = self.config.FEATURE_SHAPE
+
+        return spaces.Box(
+            low=np.finfo(np.float32).min,
+            high=np.finfo(np.float32).max,
+            shape=sensor_shape,
+            dtype=np.float32,
+        )
+
+    def get_observation(
+        self, observations, episode: Episode, *args: Any, **kwargs: Any
+    ):
+        return self._sim.get_remaining_timesteps()
+
+@registry.register_sensor(name="ContextLengthSensor")
+class ContextLengthSensor(Sensor):
+    r"""Sensor for number of remaining observation slots in context buffer.
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: 
+    Attributes:
+    """
+
+    def __init__(
+        self, sim: Simulator, config: Config, *args: Any, **kwargs: Any
+    ):
+        self._sim = sim
+        super().__init__(config=config)
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return "context_length_sensor"
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return SensorTypes.MEASUREMENT
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        assert hasattr(self.config, 'FEATURE_SHAPE')
+        sensor_shape = self.config.FEATURE_SHAPE
+
+        return spaces.Box(
+            low=np.finfo(np.float32).min,
+            high=np.finfo(np.float32).max,
+            shape=sensor_shape,
+            dtype=np.float32,
+        )
+
+    def get_observation(
+        self, observations, episode: Episode, *args: Any, **kwargs: Any
+    ):
+        return self._sim.get_remaining_observations()
+
 @registry.register_measure
 class AcousticMapError(Measure):
     """The measure calculates a distance towards the goal."""

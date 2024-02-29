@@ -154,7 +154,6 @@ class ContextEncoderNet(Net):
         
 
         #RNN context and state encoders
-        self.context_encoder = RNNStateEncoder(rnn_input_size*2, self._hidden_size)
         self.state_encoder = RNNStateEncoder(rnn_input_size, self._hidden_size)
 
         #per modality observation encoders
@@ -213,8 +212,24 @@ class ContextEncoderNet(Net):
         pose = observations['pose']
         assert 'occupancy_map' in observations
         global_occ_map = observations['occupancy_map']
+        assert 'timestep_sensor' in observations
+        remaining_trajectory_length = observations['timestep_sensor']
+        assert 'context_length_sensor' in observations
+        remaining_context_capacity = observations['context_length_sensor']
 
         context_feats = []
+
+        #Only add audio to policy when collected/sampled
+        if self._cfg.UNIFORM_SAMPLE:
+            sampling_condition = (remaining_trajectory_length < 1.0) & (remaining_trajectory_length % 0.05 == 0)
+            mask = ~sampling_condition
+            mask_expanded = mask.view(bin_spect_mag.shape[0], 1, 1, 1).expand_as(bin_spect_mag)
+            bin_spect_mag[mask_expanded] = 0
+        else:
+            prev_actions_simplified = prev_actions.squeeze(-1)
+            actions_of_interest = torch.tensor([3, 4, 5], device=prev_actions_simplified.device)
+            mask = ~torch.any(prev_actions_simplified[:, None] == actions_of_interest, dim=1)
+            bin_spect_mag[mask, ...] = 0
 
         #encode each modality
         if self._cfg.SENSORS in [["RGB_SENSOR", "DEPTH_SENSOR"], ["DEPTH_SENSOR", "RGB_SENSOR"]]:
@@ -224,10 +239,7 @@ class ContextEncoderNet(Net):
         else:
             raise ValueError
         
-        #zero out audio modality for policy
-        bin_spect_mag_blind = torch.zeros_like(bin_spect_mag)
-
-        audio_context_feats = self.audio_context_enc({"audio_spect": bin_spect_mag_blind})
+        audio_context_feats = self.audio_context_enc({"audio_spect": bin_spect_mag})
         context_feats.append(audio_context_feats)
 
         pose_context_feats = self.pose_context_enc({"positional_obs": pose})
@@ -240,10 +252,12 @@ class ContextEncoderNet(Net):
         x1 = self.fusion_context_enc(torch.cat(context_feats, dim=1).unsqueeze(0))
         x1 = self.fused_context_layer(x1)
 
-        #pass modality through context encoder RNN
-        #encoded_obs, prev_obs_hidden_states1 = self.context_encoder(x1, prev_obs_hidden_states, masks)
-        #print("encoded obs shape:")
-        #print(encoded_obs.shape)
+        if remaining_trajectory_length.dim() == 1:
+            remaining_trajectory_length = remaining_trajectory_length.unsqueeze(0)
+        if remaining_context_capacity.dim() == 1:
+            remaining_context_capacity = remaining_context_capacity.unsqueeze(0)
+        x1 = torch.cat((x1, remaining_trajectory_length, remaining_context_capacity), dim=1)
+
         prev_obs_hidden_states1 = None
 
         #pass encoded_observation state to state encoder
