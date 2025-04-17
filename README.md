@@ -1,7 +1,7 @@
 # ActiveRIR: Active Audio-Visual Exploration forAcoustic Environment Modeling
 This repository contains the PyTorch implementation of our **IROS 2024 paper** and the associated datasets.
 
-Project website: [https://vision.cs.utexas.edu/projects/fs_rir/](https://vision.cs.utexas.edu/projects/active_rir/)
+Project website: [https://vision.cs.utexas.edu/projects/active_rir/](https://vision.cs.utexas.edu/projects/active_rir/)
 
 ## Dependencies
 This code has been tested with ```python 3.6.13```, ```habitat-api 0.1.4```, ```habitat-sim 0.1.4``` and ```torch 1.4.0```. Additional python package requirements are available in ```requirements.txt```.   
