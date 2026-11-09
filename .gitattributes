@@ -1,0 +1,2 @@
+# Analysis notebooks supplement the Python implementation.
+scripts/**/*.ipynb linguist-documentation
